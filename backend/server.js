@@ -115,9 +115,14 @@ app.post('/api/master', async (req, res) => {
   }
 });
 
-// PUSH SESSION DATA (End of Day Sync)
+// PUSH SESSION DATA — called continuously as games/payments happen (live-sync),
+// and once more with final:true when the admin closes the day ("เริ่มวันใหม่").
+// `games`/`payments` are always the client's FULL current list for this session,
+// so this endpoint treats them as authoritative: existing rows get updated (e.g.
+// editGame changing shuttle count), and rows the client no longer has get removed
+// (e.g. ยกเลิกเกม / ล้างกระดาน) instead of lingering in the DB forever.
 app.post('/api/sync', async (req, res) => {
-  const { timestamp, members, games, payments } = req.body;
+  const { timestamp, members, games, payments, final } = req.body;
   const conn = await pool.getConnection();
 
   try {
@@ -126,19 +131,29 @@ app.post('/api/sync', async (req, res) => {
     const sessionId = `session-${timestamp}`;
     const dateInt = new Date(timestamp).getTime();
     const membersSnapshot = JSON.stringify(members);
+    const status = final ? 'completed' : 'active';
 
-    // Insert Session
-    await conn.query('INSERT INTO sessions (id, date, status, members_snapshot) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE members_snapshot = VALUES(members_snapshot)', [sessionId, dateInt, 'completed', membersSnapshot]);
+    // Insert/refresh Session
+    await conn.query(
+      'INSERT INTO sessions (id, date, status, members_snapshot) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE status = VALUES(status), members_snapshot = VALUES(members_snapshot)',
+      [sessionId, dateInt, status, membersSnapshot]
+    );
 
-    // Insert Games
+    // Upsert Games (update instead of skip, so an edit after the game was already live-synced still applies)
+    const incomingGameIds = [];
     for (const g of (games || [])) {
       const gId = g.id || `game-${Date.now()}-${Math.random()}`;
+      incomingGameIds.push(gId);
       await conn.query(
-        'INSERT IGNORE INTO games (id, session_id, court_id, court_name, played_at, shuttles_used, shuttle_cost, court_fee) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        `INSERT INTO games (id, session_id, court_id, court_name, played_at, shuttles_used, shuttle_cost, court_fee)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE court_id = VALUES(court_id), court_name = VALUES(court_name),
+           played_at = VALUES(played_at), shuttles_used = VALUES(shuttles_used),
+           shuttle_cost = VALUES(shuttle_cost), court_fee = VALUES(court_fee)`,
         [gId, sessionId, g.courtId, g.courtName, g.playedAt, g.shuttlesUsed, g.shuttleCostPerPerson, g.courtFeePerPerson]
       );
 
-      // Delete old players for this game first (safe re-insert)
+      // Re-sync players for this game (safe re-insert)
       await conn.query('DELETE FROM game_players WHERE game_id = ?', [gId]);
       for (const p of (g.players || [])) {
         await conn.query(
@@ -147,15 +162,38 @@ app.post('/api/sync', async (req, res) => {
         );
       }
     }
+    // Remove games the client no longer has (Undo Game / ล้างกระดาน)
+    if (games) {
+      if (incomingGameIds.length > 0) {
+        await conn.query(
+          `DELETE FROM games WHERE session_id = ? AND id NOT IN (${incomingGameIds.map(() => '?').join(',')})`,
+          [sessionId, ...incomingGameIds]
+        );
+      } else {
+        await conn.query('DELETE FROM games WHERE session_id = ?', [sessionId]);
+      }
+    }
 
-    // Insert Payments
+    // Upsert Payments (append-only in the app today, but kept authoritative for consistency)
+    const incomingPaymentIds = [];
     for (const p of (payments || [])) {
       const pId = p.id || `payment-${Date.now()}-${Math.random()}`;
+      incomingPaymentIds.push(pId);
       const detailsStr = p.details ? JSON.stringify(p.details) : null;
       await conn.query(
         'INSERT IGNORE INTO payments (id, session_id, member_id, member_name, member_rank, amount, method, note, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [pId, sessionId, p.memberId, p.memberName, p.memberRank, p.amount, p.method, p.note || '', detailsStr, p.timestamp]
       );
+    }
+    if (payments) {
+      if (incomingPaymentIds.length > 0) {
+        await conn.query(
+          `DELETE FROM payments WHERE session_id = ? AND id NOT IN (${incomingPaymentIds.map(() => '?').join(',')})`,
+          [sessionId, ...incomingPaymentIds]
+        );
+      } else {
+        await conn.query('DELETE FROM payments WHERE session_id = ?', [sessionId]);
+      }
     }
 
     await conn.commit();

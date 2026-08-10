@@ -208,6 +208,32 @@ export default function App() {
     return () => clearTimeout(handler);
   }, [members, courts, gameHistory, paymentHistory, sessionHistory, courtFeePerPerson, shuttlePrice, rankMemory, snacks, sessionStartDate, courtQueues]);
 
+  // Live-sync: push games/payments straight into the permanent DB tables as they happen —
+  // no need to wait for "เริ่มวันใหม่" (Reset Day) before a game/payment becomes durable.
+  // Skipped while no ก๊วน/session is open (sessionStartDate null) so it never creates junk
+  // session rows before anyone has checked in.
+  useEffect(() => {
+    if (!sessionStartDate) return;
+    const handler = setTimeout(async () => {
+      try {
+        await fetch(`${API_BASE}/api/sync`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            timestamp: sessionStartDate,
+            members,
+            games: gameHistory,
+            payments: paymentHistory,
+            final: false
+          })
+        });
+      } catch (err) {
+        console.warn('Live-sync to DB failed (will retry on next change):', err);
+      }
+    }, 3000);
+    return () => clearTimeout(handler);
+  }, [members, gameHistory, paymentHistory, sessionStartDate]);
+
   // Debounced save MASTER DATA (Permanent members & Settings) to MySQL
   useEffect(() => {
     const handler = setTimeout(async () => {
@@ -242,20 +268,24 @@ export default function App() {
 
   const resetDay = async () => {
     if (!confirm('คุณแน่ใจหรือไม่ว่าต้องการเริ่มวันใหม่? (ล้างประวัติการตีและรีเซ็ตคอร์ด)')) return;
+    // ใช้ timestamp เดิมของ session (ไม่ใช่เวลาที่กดปุ่ม) เพื่อให้ archive ตรงกับ session ที่
+    // live-sync เขียนไว้ระหว่างวันตัว sessionId เดียวกัน ไม่สร้างแถวใหม่ซ้ำ
+    const finalTimestamp = sessionStartDate || Date.now();
     saveSession();
     setSessionStartDate(null);
 
-    // Sync session to the DB
+    // Final sync: ปิด session เป็น completed (ข้อมูลจริงถูก live-sync เข้า DB ไปตลอดวันแล้ว)
     setIsSyncing(true);
     try {
       await fetch(`${API_BASE}/api/sync`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          timestamp: Date.now(),
+          timestamp: finalTimestamp,
           members: members,
           games: gameHistory,
-          payments: paymentHistory
+          payments: paymentHistory,
+          final: true
         })
       });
     } catch (err) {
@@ -288,6 +318,16 @@ export default function App() {
 
   const clearBoard = () => {
     if (!confirm('ยืนยัน "ล้างกระดาน" หรือไม่? \n(ลบรายการทั้งหมดของวันนี้ทิ้งโดยไม่บันทึกประวัติ)')) return;
+    // Live-sync อาจเขียนเกม/บิลของวันนี้ลง DB ไปแล้วก่อนหน้านี้ — เพราะ "ล้างกระดาน" แปลว่า
+    // ไม่บันทึกประวัติ จึงต้องสั่งลบของที่เพิ่ง sync ไปออกจาก DB ด้วย ไม่ใช่แค่ล้างหน้าจอ
+    const staleTimestamp = sessionStartDate;
+    if (staleTimestamp) {
+      fetch(`${API_BASE}/api/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ timestamp: staleTimestamp, members, games: [], payments: [], final: true })
+      }).catch(err => console.warn('Failed to purge cleared board from DB:', err));
+    }
     setGameHistory([]);
     setPaymentHistory([]);
     setCourts(INITIAL_COURTS);
