@@ -1,0 +1,86 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=IBM+Plex+Sans+Thai:wght@300;400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", "IBM Plex Sans Thai", ui-sans-serif, system-ui, sans-serif;
+  --font-headline: "Outfit", "IBM Plex Sans Thai", sans-serif;
+
+  --color-primary: #a73300;
+  --color-primary-container: #ff794a;
+  --color-on-primary: #ffefeb;
+  
+  --color-secondary: #004be2;
+  --color-secondary-container: #c5d0ff;
+  --color-on-secondary: #f2f1ff;
+
+  --color-tertiary: #006a28;
+  --color-tertiary-container: #cfffce;
+  --color-on-tertiary: #004819;
+
+  --color-background: #f9f6f5;
+  --color-surface: #ffffff;
+  --color-surface-container: #f3f0ef;
+  --color-on-surface: #2f2e2e;
+  --color-on-surface-variant: #5c5b5b;
+  
+  --color-error: #b31b25;
+  --color-on-error: #ffefee;
+}
+
+@layer base {
+  body {
+    @apply font-sans bg-background text-on-surface;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-size: 15px;
+    line-height: 1.6;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-headline;
+    line-height: 1.3;
+  }
+
+  button {
+    font-size: 14px;
+  }
+
+  input, select, textarea {
+    font-size: 14px;
+  }
+
+  /* ตัวเลขตาราง ใช้ tabular-nums เพื่อให้เรียงแนวตรง */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.court-texture {
+  background-image: radial-gradient(#afacac 0.5px, transparent 0.5px);
+  background-size: 24px 24px;
+}
+
+/* Custom Scrollbar */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(47, 46, 46, 0.12);
+  border-radius: 999px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(47, 46, 46, 0.25);
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+

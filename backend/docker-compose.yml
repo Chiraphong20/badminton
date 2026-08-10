@@ -1,0 +1,10 @@
+services:
+  backend:
+    build: .
+    image: netdeveiei/smashpang-backend:latest
+    container_name: smashpang-api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3001:3001"
+    env_file:
+      - .env
