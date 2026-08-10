@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import crypto from 'crypto';
 import { pool } from './db.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -10,42 +11,180 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const port = process.env.PORT || 3001;
 
+// Trust the first proxy hop (Docker/nginx/reverse proxy) so req.ip reflects the
+// real client for login rate-limiting instead of the proxy's own address.
+app.set('trust proxy', 1);
+
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 // Serve static assets from the frontend build
 app.use(express.static(path.join(__dirname, '../dist')));
 
+// ── AUTH ─────────────────────────────────────────────────────────────────
+// Single shared admin PIN, verified server-side. The PIN never lives on the
+// client — only its hash sits in `settings`. A correct /api/login exchanges
+// it for a signed, expiring bearer token (HMAC, no session store needed).
+// Every /api/* route requires that token EXCEPT the ones explicitly marked
+// public below: /api/health, /api/login, and GET /api/state (the public
+// no-login Queue View screen reads live state from that last one).
+const AUTH_SECRET = process.env.AUTH_SECRET || crypto.randomBytes(32).toString('hex');
+if (!process.env.AUTH_SECRET) {
+  console.warn('⚠️  AUTH_SECRET ไม่ได้ตั้งใน .env — ใช้ค่าสุ่มชั่วคราว (ทุกคนจะหลุด login เมื่อ restart เซิร์ฟเวอร์) ตั้ง AUTH_SECRET ใน .env เพื่อให้ session อยู่ข้าม restart ได้');
+}
+const TOKEN_TTL_MS = 12 * 60 * 60 * 1000; // 12 ชั่วโมง ต่อการ login หนึ่งครั้ง
+
+function hashPin(pin) {
+  return crypto.createHmac('sha256', AUTH_SECRET).update(String(pin)).digest('hex');
+}
+
+function timingSafeStringEqual(a, b) {
+  const aBuf = Buffer.from(String(a || ''));
+  const bBuf = Buffer.from(String(b || ''));
+  if (aBuf.length !== bBuf.length) return false;
+  return crypto.timingSafeEqual(aBuf, bBuf);
+}
+
+function signToken(payload) {
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = crypto.createHmac('sha256', AUTH_SECRET).update(body).digest('base64url');
+  return `${body}.${sig}`;
+}
+
+function verifyToken(token) {
+  if (!token || typeof token !== 'string' || !token.includes('.')) return null;
+  const [body, sig] = token.split('.');
+  const expectedSig = crypto.createHmac('sha256', AUTH_SECRET).update(body).digest('base64url');
+  if (!timingSafeStringEqual(sig, expectedSig)) return null;
+  try {
+    const data = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    if (!data.exp || Date.now() > data.exp) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function requireAuth(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const data = verifyToken(token);
+  if (!data) return res.status(401).json({ error: 'ต้องเข้าสู่ระบบก่อนใช้งาน' });
+  req.auth = data;
+  next();
+}
+
+// Basic brute-force throttle on PIN login — PINs are short (4-8 digits), so
+// attempts must be limited. Not a hard guarantee (best-effort per IP), but it
+// meaningfully slows down blind guessing.
+const loginAttempts = new Map(); // ip -> { count, resetAt }
+const MAX_LOGIN_ATTEMPTS = 8;
+const LOGIN_WINDOW_MS = 10 * 60 * 1000;
+
+function isRateLimited(ip) {
+  const rec = loginAttempts.get(ip);
+  if (!rec || Date.now() > rec.resetAt) return false;
+  return rec.count >= MAX_LOGIN_ATTEMPTS;
+}
+function recordFailedLogin(ip) {
+  const now = Date.now();
+  const rec = loginAttempts.get(ip);
+  if (!rec || now > rec.resetAt) {
+    loginAttempts.set(ip, { count: 1, resetAt: now + LOGIN_WINDOW_MS });
+  } else {
+    rec.count += 1;
+  }
+}
+function clearLoginAttempts(ip) {
+  loginAttempts.delete(ip);
+}
+
 // Health Check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-// Auto-migrate: Add 'details' column to payments if missing
+// LOGIN — trade the admin PIN for a bearer token
+app.post('/api/login', async (req, res) => {
+  const ip = req.ip;
+  if (isRateLimited(ip)) {
+    return res.status(429).json({ error: 'ลองผิดหลายครั้งเกินไป กรุณารอสักครู่แล้วลองใหม่' });
+  }
+  const { pin } = req.body;
+  if (!pin || typeof pin !== 'string') return res.status(400).json({ error: 'กรุณาระบุ PIN' });
+
+  try {
+    const [rows] = await pool.query('SELECT admin_pin_hash FROM settings WHERE id = 1');
+    const storedHash = rows[0]?.admin_pin_hash;
+    if (!storedHash || !timingSafeStringEqual(hashPin(pin), storedHash)) {
+      recordFailedLogin(ip);
+      return res.status(401).json({ error: 'PIN ไม่ถูกต้อง' });
+    }
+    clearLoginAttempts(ip);
+    const exp = Date.now() + TOKEN_TTL_MS;
+    const token = signToken({ role: 'admin', exp });
+    res.json({ success: true, token, expiresAt: exp });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// CHANGE PIN — requires a valid session AND the current PIN
+app.post('/api/change-pin', requireAuth, async (req, res) => {
+  const { currentPin, newPin } = req.body;
+  if (!newPin || !/^\d{4,8}$/.test(newPin)) {
+    return res.status(400).json({ error: 'PIN ใหม่ต้องเป็นตัวเลข 4-8 หลัก' });
+  }
+  try {
+    const [rows] = await pool.query('SELECT admin_pin_hash FROM settings WHERE id = 1');
+    const storedHash = rows[0]?.admin_pin_hash;
+    if (!storedHash || !timingSafeStringEqual(hashPin(currentPin), storedHash)) {
+      return res.status(401).json({ error: 'PIN ปัจจุบันไม่ถูกต้อง' });
+    }
+    await pool.query('UPDATE settings SET admin_pin_hash = ? WHERE id = 1', [hashPin(newPin)]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Auto-migrate: ensure payments.details, sessions.members_snapshot, settings.admin_pin_hash exist
 (async () => {
   try {
-    // Payments
     await pool.query(`ALTER TABLE payments ADD COLUMN IF NOT EXISTS details JSON`);
-    
-    // Sessions: Add members_snapshot
     await pool.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS members_snapshot LONGTEXT`);
-
-    console.log('✅ DB migration: members_snapshot and payments.details ensured');
+    await pool.query(`ALTER TABLE settings ADD COLUMN IF NOT EXISTS admin_pin_hash VARCHAR(255)`);
+    console.log('✅ DB migration: members_snapshot, payments.details, settings.admin_pin_hash ensured');
   } catch (e) {
     // MySQL < 8.0 doesn't support IF NOT EXISTS on ALTER TABLE
     try {
       await pool.query(`ALTER TABLE payments ADD COLUMN details LONGTEXT NULL`);
       await pool.query(`ALTER TABLE sessions ADD COLUMN members_snapshot LONGTEXT NULL`);
+      await pool.query(`ALTER TABLE settings ADD COLUMN admin_pin_hash VARCHAR(255) NULL`);
       console.log('✅ DB migration: columns added');
     } catch (e2) {
-      // Column already exists - that's fine
+      // Columns already exist - that's fine
       console.log('ℹ️  columns already exist');
     }
+  }
+
+  // Seed a default PIN hash the first time this runs against a DB with none set yet.
+  try {
+    const [rows] = await pool.query('SELECT admin_pin_hash FROM settings WHERE id = 1');
+    if (rows.length && !rows[0].admin_pin_hash) {
+      const defaultPin = process.env.ADMIN_PIN || '1234';
+      await pool.query('UPDATE settings SET admin_pin_hash = ? WHERE id = 1', [hashPin(defaultPin)]);
+      console.log(`⚠️  ตั้ง PIN เริ่มต้นเป็น "${defaultPin}" — ไปเปลี่ยนที่หน้าตั้งค่าทันทีหลัง deploy จริง`);
+    }
+  } catch (e) {
+    console.error('Failed to seed default PIN:', e);
   }
 })();
 
 // PULL MASTER DATA
-app.get('/api/master', async (req, res) => {
+app.get('/api/master', requireAuth, async (req, res) => {
   try {
     const [membersRows] = await pool.query('SELECT * FROM members');
     const [settingsRows] = await pool.query('SELECT * FROM settings WHERE id = 1');
@@ -80,7 +219,7 @@ app.get('/api/master', async (req, res) => {
 });
 
 // PUSH MASTER DATA
-app.post('/api/master', async (req, res) => {
+app.post('/api/master', requireAuth, async (req, res) => {
   const { members, settings } = req.body;
   const conn = await pool.getConnection();
   try {
@@ -121,7 +260,7 @@ app.post('/api/master', async (req, res) => {
 // so this endpoint treats them as authoritative: existing rows get updated (e.g.
 // editGame changing shuttle count), and rows the client no longer has get removed
 // (e.g. ยกเลิกเกม / ล้างกระดาน) instead of lingering in the DB forever.
-app.post('/api/sync', async (req, res) => {
+app.post('/api/sync', requireAuth, async (req, res) => {
   const { timestamp, members, games, payments, final } = req.body;
   const conn = await pool.getConnection();
 
@@ -208,7 +347,7 @@ app.post('/api/sync', async (req, res) => {
 });
 
 // GET ALL SESSION DATES
-app.get('/api/sessions', async (req, res) => {
+app.get('/api/sessions', requireAuth, async (req, res) => {
   try {
     const [sessions] = await pool.query('SELECT id, date FROM sessions ORDER BY date DESC');
     res.json(sessions.map(s => ({ id: s.id, date: Number(s.date) })));
@@ -218,7 +357,7 @@ app.get('/api/sessions', async (req, res) => {
 });
 
 // GET MEMBER PLAY HISTORY (supports multi-name: "เน็ต,เน็ตน่ารัก")
-app.get('/api/member-history', async (req, res) => {
+app.get('/api/member-history', requireAuth, async (req, res) => {
   const { name } = req.query;
   if (!name) return res.status(400).json({ error: 'Missing name' });
 
@@ -342,7 +481,7 @@ app.get('/api/member-history', async (req, res) => {
 });
 
 // PULL SESSION (Historical data)
-app.get('/api/session', async (req, res) => {
+app.get('/api/session', requireAuth, async (req, res) => {
   const { date } = req.query; // YYYY-MM-DD
   if (!date) return res.status(400).json({ error: 'Missing date parameter' });
 
@@ -359,7 +498,7 @@ app.get('/api/session', async (req, res) => {
     const endWindow = new Date(startOfDay.getTime() + 36 * 60 * 60 * 1000);
 
     const [sessions] = await pool.query(
-      'SELECT * FROM sessions WHERE date >= ? AND date <= ? ORDER BY date DESC LIMIT 1', 
+      'SELECT * FROM sessions WHERE date >= ? AND date <= ? ORDER BY date DESC LIMIT 1',
       [startOfDay.getTime(), endWindow.getTime()]
     );
 
@@ -384,11 +523,11 @@ app.get('/api/session', async (req, res) => {
       const gPlayers = players.filter(p => p.game_id === g.id).map(p => ({
         id: p.member_id, name: p.member_name, rank: p.member_rank
       }));
-      
+
       const shuttleCostPerPerson = Number(g.shuttle_cost);
       let shuttlesUsed = g.shuttles_used;
-      
-      // RECONSTRUCT SHUTTLES USED: If the cost per person implies more shuttles 
+
+      // RECONSTRUCT SHUTTLES USED: If the cost per person implies more shuttles
       // than recorded (common in legacy data), adjust shuttlesUsed for accurate summary.
       // Calculation: (CostPerPerson * NumPlayers) / PricePerShuttle
       const totalCostForGame = shuttleCostPerPerson * gPlayers.length;
@@ -432,8 +571,8 @@ app.get('/api/session', async (req, res) => {
     // Try to use stored snapshot first for 100% data fidelity
     let snapshot = null;
     if (storedSnapshotJson) {
-      try { 
-        snapshot = JSON.parse(storedSnapshotJson); 
+      try {
+        snapshot = JSON.parse(storedSnapshotJson);
       } catch (e) {
         console.error('Error parsing stored members_snapshot:', e);
       }
@@ -442,15 +581,15 @@ app.get('/api/session', async (req, res) => {
     // Reconstruct simplified members snapshot from games & payments for historical view (Fallback)
     if (!snapshot || snapshot.length === 0) {
       const membersMap = new Map();
-      
+
       // Process Games for individual costs
       formattedGames.forEach(g => {
         g.players.forEach(p => {
           if (!membersMap.has(p.id)) {
-            membersMap.set(p.id, { 
-              id: p.id, name: p.name, rank: p.rank, gamesPlayed: 0, status: 'paid', 
-              balance: 0, courtBalance: 0, shuttleBalance: 0, snackBalance: 0, 
-              shuttleCount: 0, snackHistory: [], paidCourtFee: true, checkInTime: 0 
+            membersMap.set(p.id, {
+              id: p.id, name: p.name, rank: p.rank, gamesPlayed: 0, status: 'paid',
+              balance: 0, courtBalance: 0, shuttleBalance: 0, snackBalance: 0,
+              shuttleCount: 0, snackHistory: [], paidCourtFee: true, checkInTime: 0
             });
           }
           const m = membersMap.get(p.id);
@@ -465,7 +604,7 @@ app.get('/api/session', async (req, res) => {
         });
       });
 
-      // 1. BACKFILL: If courtBalance is still 0 (e.g. because game.court_fee was 0), 
+      // 1. BACKFILL: If courtBalance is still 0 (e.g. because game.court_fee was 0),
       // but they played games, apply a ONE-TIME default court fee.
       membersMap.forEach(m => {
         if ((m.courtBalance || 0) === 0 && m.gamesPlayed > 0) {
@@ -474,7 +613,7 @@ app.get('/api/session', async (req, res) => {
         // Round shuttle count for neatness
         m.shuttleCount = Math.round(m.shuttleCount * 10) / 10;
       });
-      
+
       // Process Payments for snack history and actual amount paid
       const memberPaidTotal = new Map(); // Track how much they actually paid
       formattedPayments.forEach(p => {
@@ -494,7 +633,7 @@ app.get('/api/session', async (req, res) => {
         const includedIds = p.details?.includedMemberIds || [p.memberId];
         includedIds.forEach(id => {
           const currentPaid = memberPaidTotal.get(id) || 0;
-          memberPaidTotal.set(id, currentPaid + (p.amount / includedIds.length)); 
+          memberPaidTotal.set(id, currentPaid + (p.amount / includedIds.length));
         });
       });
 
@@ -503,24 +642,24 @@ app.get('/api/session', async (req, res) => {
         const totalPaid = memberPaidTotal.get(id) || 0;
         // Total costs identified FROM GAMES
         const gameCosts = (m.courtBalance || 0) + (m.shuttleBalance || 0);
-        
-        // RECONSTRUCT SNACKS: If they paid more than their court+shuttle cost, 
+
+        // RECONSTRUCT SNACKS: If they paid more than their court+shuttle cost,
         // and we have NO snack history, attribute the difference to snackBalance.
         // This handles cases where older sync data lost the snack detail objects.
         if (totalPaid > (gameCosts + (m.snackBalance || 0))) {
           const diff = totalPaid - (gameCosts + (m.snackBalance || 0));
           m.snackBalance = (m.snackBalance || 0) + diff;
-          m.snackHistory.push({ 
-            id: `re-snack-${Date.now()}-${id}`, 
-            name: 'สินค้า/น้ำ (กู้คืนจากยอดจ่าย)', 
-            price: diff, 
-            time: sessionDate 
+          m.snackHistory.push({
+            id: `re-snack-${Date.now()}-${id}`,
+            name: 'สินค้า/น้ำ (กู้คืนจากยอดจ่าย)',
+            price: diff,
+            time: sessionDate
           });
         }
 
         const totalIncurred = gameCosts + (m.snackBalance || 0);
         m.balance = Math.max(0, totalIncurred - totalPaid);
-        m.status = m.balance > 0 ? 'resting' : 'paid'; 
+        m.status = m.balance > 0 ? 'resting' : 'paid';
 
         // Add total fields for Dashboard consistency
         m.totalCourt = m.courtBalance;
@@ -545,6 +684,8 @@ app.get('/api/session', async (req, res) => {
 });
 
 // GET FULL LIVE STATE (Replaces initial localStorage read)
+// Deliberately PUBLIC (no requireAuth): the no-login Queue View screen (/?queue,
+// meant for a TV/monitor at the shop) reads live court/queue data from here.
 app.get('/api/state', async (req, res) => {
   try {
     const [states] = await pool.query('SELECT * FROM system_states');
@@ -564,7 +705,7 @@ app.get('/api/state', async (req, res) => {
 });
 
 // SAVE FULL LIVE STATE (Replaces localStorage.setItem)
-app.post('/api/state', async (req, res) => {
+app.post('/api/state', requireAuth, async (req, res) => {
   const stateObj = req.body;
   const conn = await pool.getConnection();
 
@@ -592,7 +733,7 @@ app.listen(port, '0.0.0.0', () => {
 });
 
 // RE-SYNC: Recover all session data from system_states blob into proper tables
-app.post('/api/resync', async (req, res) => {
+app.post('/api/resync', requireAuth, async (req, res) => {
   const conn = await pool.getConnection();
   try {
     const [rows] = await pool.query("SELECT state_value FROM system_states WHERE state_key = 'sessionHistory'");
@@ -608,7 +749,7 @@ app.post('/api/resync', async (req, res) => {
       const membersSnapshot = session.membersSnapshot ? JSON.stringify(session.membersSnapshot) : null;
 
       await conn.query(
-        'INSERT INTO sessions (id, date, status, members_snapshot) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE status = VALUES(status), members_snapshot = VALUES(members_snapshot)', 
+        'INSERT INTO sessions (id, date, status, members_snapshot) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE status = VALUES(status), members_snapshot = VALUES(members_snapshot)',
         [sessionId, dateInt, 'completed', membersSnapshot]
       );
 

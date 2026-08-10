@@ -6,6 +6,7 @@ import { th } from 'date-fns/locale';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { useModalHotkeys } from '../hooks/useModalHotkeys';
+import { apiFetch } from '../lib/api';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -126,7 +127,7 @@ export function LogsTab({ gameHistory, sessionHistory, members, paymentHistory, 
 
   // Fetch all session dates from server on mount
   React.useEffect(() => {
-    fetch(`${API_BASE}/api/sessions`)
+    apiFetch(`${API_BASE}/api/sessions`)
       .then(r => r.json())
       .then((data: SessionDate[]) => setAllSessionDates(data))
       .catch(() => {});
@@ -194,7 +195,7 @@ export function LogsTab({ gameHistory, sessionHistory, members, paymentHistory, 
     if (!name.trim()) return;
     setMemberHistoryLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/member-history?name=${encodeURIComponent(name.trim())}`);
+      const res = await apiFetch(`${API_BASE}/api/member-history?name=${encodeURIComponent(name.trim())}`);
       const data: MemberHistoryRecord[] = await res.json();
       setMemberHistory(data);
       setMemberHistorySearched(name.trim());

@@ -19,6 +19,7 @@ import { LogsTab } from './components/LogsTab';
 import { QueueView } from './components/QueueView';
 import { RANK_WEIGHTS } from './types';
 import { useModalHotkeys } from './hooks/useModalHotkeys';
+import { apiFetch, getToken, clearToken, AUTH_EXPIRED_EVENT } from './lib/api';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -63,10 +64,10 @@ export default function App() {
   const [viewingSession, setViewingSession] = useState<SessionRecord | null>(null);
   const [rankMemory, setRankMemory] = useState<Record<string, Rank>>({});
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [adminPin, setAdminPin] = useState(() => localStorage.getItem('tj_pin') || '1234');
-
-  useEffect(() => { localStorage.setItem('tj_pin', adminPin); }, [adminPin]);
-  const [isAuthenticated, setIsAuthenticated] = useState(() => sessionStorage.getItem('tj_auth') === '1');
+  // PIN ไม่ได้เก็บ/เช็คฝั่ง client อีกต่อไป — เซิร์ฟเวอร์เป็นคนตรวจสอบและออก token ให้
+  // (ดู src/lib/api.ts + backend /api/login) isAuthenticated แค่สะท้อนว่ามี token อยู่ไหม
+  // เท่านั้น ถ้า token หมดอายุ/ใช้ไม่ได้ apiFetch จะ broadcast AUTH_EXPIRED_EVENT ให้เด้งกลับ
+  const [isAuthenticated, setIsAuthenticated] = useState(() => !!getToken());
   // เก็บวันที่เริ่มต้นก๊วน (fix ปัญหาเลยเที่ยงคืน)
   const [sessionStartDate, setSessionStartDate] = useState<number | null>(null);
 
@@ -86,14 +87,23 @@ export default function App() {
 
   const isQueueView = useMemo(() => new URLSearchParams(window.location.search).has('queue'), []);
 
-  // Sync to API on startup
+  // ถ้า token หมดอายุ/ใช้ไม่ได้ระหว่างใช้งาน (apiFetch เจอ 401) เด้งกลับไปหน้า login
   useEffect(() => {
+    const handler = () => setIsAuthenticated(false);
+    window.addEventListener(AUTH_EXPIRED_EVENT, handler);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handler);
+  }, []);
+
+  // Sync to API on startup — ทำหลัง login เสร็จเท่านั้น (ข้อมูลสมาชิก/ยอดเงินต้อง
+  // ยืนยันตัวตนก่อนถึงจะดึงได้ ไม่งั้นข้อมูลจะโหลดเข้า memory ก่อนเช็ค PIN เสร็จ)
+  useEffect(() => {
+    if (!isAuthenticated) return;
     (async () => {
       try {
         setIsSyncing(true);
         const [stateRes, masterRes] = await Promise.all([
-          fetch(`${API_BASE}/api/state`).catch(() => null),
-          fetch(`${API_BASE}/api/master`).catch(() => null)
+          apiFetch(`${API_BASE}/api/state`).catch(() => null),
+          apiFetch(`${API_BASE}/api/master`).catch(() => null)
         ]);
 
         let loadedState: any = null;
@@ -149,7 +159,7 @@ export default function App() {
         setTimeout(() => setIsInitialLoading(false), 1200);
       }
     })();
-  }, []);
+  }, [isAuthenticated]);
 
   // Keep a ref with latest state for the auto-save interval
   const autoSaveStateRef = useRef<object>({});
@@ -164,7 +174,7 @@ export default function App() {
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
-        await fetch(`${API_BASE}/api/state`, {
+        await apiFetch(`${API_BASE}/api/state`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(autoSaveStateRef.current)
@@ -184,7 +194,7 @@ export default function App() {
       // if (members.length === 0 && isSyncing) return;
 
       try {
-        await fetch(`${API_BASE}/api/state`, {
+        await apiFetch(`${API_BASE}/api/state`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -216,7 +226,7 @@ export default function App() {
     if (!sessionStartDate) return;
     const handler = setTimeout(async () => {
       try {
-        await fetch(`${API_BASE}/api/sync`, {
+        await apiFetch(`${API_BASE}/api/sync`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -238,7 +248,7 @@ export default function App() {
   useEffect(() => {
     const handler = setTimeout(async () => {
       try {
-        await fetch(`${API_BASE}/api/master`, {
+        await apiFetch(`${API_BASE}/api/master`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -277,7 +287,7 @@ export default function App() {
     // Final sync: ปิด session เป็น completed (ข้อมูลจริงถูก live-sync เข้า DB ไปตลอดวันแล้ว)
     setIsSyncing(true);
     try {
-      await fetch(`${API_BASE}/api/sync`, {
+      await apiFetch(`${API_BASE}/api/sync`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -322,7 +332,7 @@ export default function App() {
     // ไม่บันทึกประวัติ จึงต้องสั่งลบของที่เพิ่ง sync ไปออกจาก DB ด้วย ไม่ใช่แค่ล้างหน้าจอ
     const staleTimestamp = sessionStartDate;
     if (staleTimestamp) {
-      fetch(`${API_BASE}/api/sync`, {
+      apiFetch(`${API_BASE}/api/sync`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ timestamp: staleTimestamp, members, games: [], payments: [], final: true })
@@ -474,7 +484,7 @@ export default function App() {
   const pullSessionData = async (date: string) => {
     setIsSyncing(true);
     try {
-      const res = await fetch(`${API_BASE}/api/session?date=${date}`);
+      const res = await apiFetch(`${API_BASE}/api/session?date=${date}`);
       if (!res.ok) throw new Error('API return error');
       const data = await res.json();
       if (data && data.date) {
@@ -498,6 +508,26 @@ export default function App() {
     } finally {
       setIsSyncing(false);
     }
+  };
+
+  const changePin = async (currentPin: string, newPin: string): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const res = await apiFetch(`${API_BASE}/api/change-pin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPin, newPin })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) return { success: true };
+      return { success: false, error: data.error || 'เปลี่ยน PIN ไม่สำเร็จ' };
+    } catch {
+      return { success: false, error: 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้' };
+    }
+  };
+
+  const logout = () => {
+    clearToken();
+    setIsAuthenticated(false);
   };
 
   const seedMockHistory = () => {
@@ -1206,8 +1236,7 @@ export default function App() {
   if (!isAuthenticated) return (
     <AnimatePresence>
       <LoginScreen
-        pin={adminPin}
-        onLogin={() => { sessionStorage.setItem('tj_auth', '1'); setIsAuthenticated(true); }}
+        onLogin={() => setIsAuthenticated(true)}
       />
     </AnimatePresence>
   );
@@ -1495,8 +1524,8 @@ export default function App() {
                     onResetDay={resetDay}
                     onFactoryReset={factoryReset}
                     rankMemory={rankMemory}
-                    adminPin={adminPin}
-                    setAdminPin={setAdminPin}
+                    onChangePin={changePin}
+                    onLogout={logout}
                   />
                 )}
               </motion.div>

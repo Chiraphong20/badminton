@@ -10,6 +10,7 @@ import {
   Check,
   Download,
   Lock,
+  LogOut,
 } from 'lucide-react';
 import { Rank } from '../types';
 
@@ -22,24 +23,36 @@ interface Props {
   onResetDay: () => void;
   onFactoryReset: () => void;
   rankMemory: Record<string, Rank>;
-  adminPin: string;
-  setAdminPin: (pin: string) => void;
+  onChangePin: (currentPin: string, newPin: string) => Promise<{ success: boolean; error?: string }>;
+  onLogout: () => void;
 }
 
 export function SettingsTab({
   courtFeePerPerson, setCourtFeePerPerson,
   shuttlePrice, setShuttlePrice,
   onSeedMockHistory, onResetDay, onFactoryReset,
-  rankMemory, adminPin, setAdminPin
+  rankMemory, onChangePin, onLogout
 }: Props) {
   const [copied, setCopied] = useState(false);
-  const [pinInput, setPinInput] = useState(adminPin);
+  // ตัว PIN ปัจจุบันเก็บแค่ hash ไว้ที่เซิร์ฟเวอร์ ฝั่งนี้จึงพรีฟิลค่าเดิมไม่ได้แล้ว —
+  // ต้องพิมพ์ PIN ปัจจุบันมายืนยันทุกครั้งที่จะเปลี่ยน (กันกรณีเครื่องเปิดค้างไว้)
+  const [currentPinInput, setCurrentPinInput] = useState('');
+  const [newPinInput, setNewPinInput] = useState('');
   const [pinSaved, setPinSaved] = useState(false);
+  const [pinError, setPinError] = useState('');
+  const [pinSaving, setPinSaving] = useState(false);
 
-  const savePin = () => {
-    if (pinInput.length < 4) { alert('PIN ต้องมีอย่างน้อย 4 หลัก'); return; }
-    if (!/^\d+$/.test(pinInput)) { alert('PIN ต้องเป็นตัวเลขเท่านั้น'); return; }
-    setAdminPin(pinInput);
+  const savePin = async () => {
+    setPinError('');
+    if (!currentPinInput) { setPinError('กรอก PIN ปัจจุบันก่อน'); return; }
+    if (newPinInput.length < 4) { setPinError('PIN ใหม่ต้องมีอย่างน้อย 4 หลัก'); return; }
+    if (!/^\d+$/.test(newPinInput)) { setPinError('PIN ต้องเป็นตัวเลขเท่านั้น'); return; }
+    setPinSaving(true);
+    const result = await onChangePin(currentPinInput, newPinInput);
+    setPinSaving(false);
+    if (!result.success) { setPinError(result.error || 'เปลี่ยน PIN ไม่สำเร็จ'); return; }
+    setCurrentPinInput('');
+    setNewPinInput('');
     setPinSaved(true);
     setTimeout(() => setPinSaved(false), 2000);
   };
@@ -85,24 +98,45 @@ export function SettingsTab({
             PIN เข้าสู่ระบบ
           </h3>
           <div className="space-y-3">
-            <label className="text-xs font-bold text-on-surface/40 ml-2">PIN ({pinInput.length} หลัก)</label>
-            <div className="flex gap-3">
+            <div>
+              <label className="text-xs font-bold text-on-surface/40 ml-2">PIN ปัจจุบัน</label>
               <input
                 type="password"
                 inputMode="numeric"
-                value={pinInput}
-                onChange={e => setPinInput(e.target.value.replace(/\D/g, '').slice(0, 8))}
-                className="flex-1 px-6 py-4 bg-background rounded-2xl font-headline font-black text-3xl tracking-[0.5em] focus:outline-none focus:ring-4 focus:ring-primary/10 transition-all border-none"
+                value={currentPinInput}
+                onChange={e => { setPinError(''); setCurrentPinInput(e.target.value.replace(/\D/g, '').slice(0, 8)); }}
+                className="w-full mt-1 px-6 py-4 bg-background rounded-2xl font-headline font-black text-2xl tracking-[0.4em] focus:outline-none focus:ring-4 focus:ring-primary/10 transition-all border-none"
                 placeholder="••••"
               />
+            </div>
+            <div className="flex gap-3 items-end">
+              <div className="flex-1">
+                <label className="text-xs font-bold text-on-surface/40 ml-2">PIN ใหม่ ({newPinInput.length} หลัก)</label>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  value={newPinInput}
+                  onChange={e => { setPinError(''); setNewPinInput(e.target.value.replace(/\D/g, '').slice(0, 8)); }}
+                  className="w-full mt-1 px-6 py-4 bg-background rounded-2xl font-headline font-black text-2xl tracking-[0.4em] focus:outline-none focus:ring-4 focus:ring-primary/10 transition-all border-none"
+                  placeholder="••••"
+                />
+              </div>
               <button
                 onClick={savePin}
-                className="px-5 py-4 bg-primary text-white rounded-2xl font-bold text-sm shadow-lg shadow-primary/20 hover:scale-105 active:scale-95 transition-all shrink-0"
+                disabled={pinSaving}
+                className="px-5 py-4 bg-primary text-white rounded-2xl font-bold text-sm shadow-lg shadow-primary/20 hover:scale-105 active:scale-95 transition-all shrink-0 disabled:opacity-50"
               >
-                {pinSaved ? <Check size={20} /> : 'บันทึก'}
+                {pinSaved ? <Check size={20} /> : pinSaving ? '...' : 'บันทึก'}
               </button>
             </div>
-            <p className="text-xs text-on-surface/30 ml-2">ตัวเลข 4–8 หลัก · ใช้เมื่อเปิดแอปครั้งถัดไป</p>
+            {pinError && <p className="text-xs text-red-500 font-bold ml-2">{pinError}</p>}
+            <p className="text-xs text-on-surface/30 ml-2">ตัวเลข 4–8 หลัก · เปลี่ยนที่นี่จะมีผลกับทุกเครื่องที่ล็อกอินอยู่</p>
+            <button
+              onClick={onLogout}
+              className="flex items-center gap-2 text-xs font-bold text-on-surface/40 hover:text-red-500 transition-colors ml-2 pt-2"
+            >
+              <LogOut size={14} /> ออกจากระบบ
+            </button>
           </div>
         </section>
 

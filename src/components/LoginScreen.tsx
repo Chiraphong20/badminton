@@ -1,38 +1,62 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Delete } from 'lucide-react';
+import { Delete, Check, Loader2 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { setToken } from '../lib/api';
+
+const API_BASE = import.meta.env.VITE_API_URL || '';
+const MIN_PIN_LENGTH = 4;
+const MAX_PIN_LENGTH = 8;
 
 interface Props {
   onLogin: () => void;
-  pin: string;
 }
 
-export function LoginScreen({ onLogin, pin }: Props) {
+export function LoginScreen({ onLogin }: Props) {
   const [input, setInput] = useState('');
   const [shake, setShake] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState('');
 
   const press = (digit: string) => {
-    if (input.length >= pin.length) return;
-    const next = input + digit;
-    setInput(next);
-    if (next.length === pin.length) {
-      setTimeout(() => {
-        if (next === pin) {
-          setSuccess(true);
-          setTimeout(onLogin, 600);
-        } else {
-          setShake(true);
-          setTimeout(() => { setInput(''); setShake(false); }, 600);
-        }
-      }, 80);
+    if (checking || input.length >= MAX_PIN_LENGTH) return;
+    setError('');
+    setInput(prev => prev + digit);
+  };
+
+  const del = () => { if (!checking) { setError(''); setInput(p => p.slice(0, -1)); } };
+
+  const submit = async () => {
+    if (checking || input.length < MIN_PIN_LENGTH) return;
+    setChecking(true);
+    setError('');
+    try {
+      const res = await fetch(`${API_BASE}/api/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin: input })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.token) {
+        setToken(data.token);
+        setSuccess(true);
+        setTimeout(onLogin, 500);
+      } else {
+        setError(data.error || 'PIN ไม่ถูกต้อง');
+        setShake(true);
+        setTimeout(() => { setInput(''); setShake(false); setChecking(false); }, 500);
+        return;
+      }
+    } catch {
+      setError('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้');
+      setShake(true);
+      setTimeout(() => { setShake(false); setChecking(false); }, 500);
+      return;
     }
   };
 
-  const del = () => setInput(p => p.slice(0, -1));
-
-  const keys = ['1','2','3','4','5','6','7','8','9','','0','⌫'];
+  const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'submit', '0', 'del'];
 
   return (
     <motion.div
@@ -66,9 +90,9 @@ export function LoginScreen({ onLogin, pin }: Props) {
         <motion.div
           animate={shake ? { x: [-8, 8, -6, 6, -4, 4, 0] } : {}}
           transition={{ duration: 0.4 }}
-          className="flex items-center gap-4"
+          className="flex items-center gap-4 flex-wrap justify-center max-w-[220px]"
         >
-          {Array.from({ length: pin.length }).map((_, i) => (
+          {Array.from({ length: Math.max(input.length, MIN_PIN_LENGTH) }).map((_, i) => (
             <motion.div
               key={i}
               animate={{
@@ -89,28 +113,50 @@ export function LoginScreen({ onLogin, pin }: Props) {
           ))}
         </motion.div>
 
-        <p className="text-white/30 text-sm font-semibold -mt-4">
-          {success ? '✓ เข้าสู่ระบบสำเร็จ' : shake ? 'PIN ไม่ถูกต้อง' : 'ใส่ PIN เพื่อเข้าสู่ระบบ'}
+        <p className={cn('text-sm font-semibold -mt-4', error ? 'text-red-400' : 'text-white/30')}>
+          {success ? '✓ เข้าสู่ระบบสำเร็จ' : error || (checking ? 'กำลังตรวจสอบ...' : 'ใส่ PIN แล้วกด ✓ เพื่อเข้าสู่ระบบ')}
         </p>
 
         {/* Numpad */}
-        <div className="grid grid-cols-3 gap-3 w-full">
+        <div className={cn('grid grid-cols-3 gap-3 w-full transition-opacity', checking && 'opacity-50 pointer-events-none')}>
           {keys.map((k, i) => {
-            if (k === '') return <div key={i} />;
-            const isDel = k === '⌫';
+            if (k === 'del') {
+              return (
+                <motion.button
+                  key={i}
+                  whileTap={{ scale: 0.88 }}
+                  onClick={del}
+                  className="h-16 rounded-2xl font-black text-2xl flex items-center justify-center transition-colors bg-white/5 text-white/40 hover:bg-white/10"
+                >
+                  <Delete size={22} />
+                </motion.button>
+              );
+            }
+            if (k === 'submit') {
+              const ready = input.length >= MIN_PIN_LENGTH;
+              return (
+                <motion.button
+                  key={i}
+                  whileTap={ready ? { scale: 0.88 } : undefined}
+                  onClick={submit}
+                  disabled={!ready}
+                  className={cn(
+                    'h-16 rounded-2xl font-black text-2xl flex items-center justify-center transition-colors',
+                    ready ? 'bg-primary text-white hover:bg-primary/90' : 'bg-white/5 text-white/20'
+                  )}
+                >
+                  {checking ? <Loader2 size={22} className="animate-spin" /> : <Check size={22} />}
+                </motion.button>
+              );
+            }
             return (
               <motion.button
                 key={i}
                 whileTap={{ scale: 0.88 }}
-                onClick={() => isDel ? del() : press(k)}
-                className={cn(
-                  'h-16 rounded-2xl font-black text-2xl flex items-center justify-center transition-colors',
-                  isDel
-                    ? 'bg-white/5 text-white/40 hover:bg-white/10'
-                    : 'bg-white/10 text-white hover:bg-white/20 active:bg-primary/40'
-                )}
+                onClick={() => press(k)}
+                className="h-16 rounded-2xl font-black text-2xl flex items-center justify-center transition-colors bg-white/10 text-white hover:bg-white/20 active:bg-primary/40"
               >
-                {isDel ? <Delete size={22} /> : k}
+                {k}
               </motion.button>
             );
           })}
