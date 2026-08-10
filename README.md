@@ -22,6 +22,7 @@ React 19 + TypeScript + Vite · Express · MySQL · Tailwind CSS
    - `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_PORT` — ฐานข้อมูล
    - `AUTH_SECRET` — สตริงสุ่มยาวๆ ไว้เซ็น session login (เช่น `openssl rand -hex 32`) **ต้องตั้งก่อนใช้งานจริง** ไม่งั้นทุกคนจะหลุด login เมื่อ restart เซิร์ฟเวอร์
    - `ADMIN_PIN` — PIN เริ่มต้น (ไม่ตั้งจะเป็น `1234`) ใช้ครั้งแรกเท่านั้น หลังจากนั้นไปเปลี่ยนที่หน้า "ตั้งค่าระบบ" ในแอป
+   - `CORS_ORIGIN` — โดเมนจริงของ frontend (เช่น `https://smashpangg.vercel.app`) ไม่ตั้งจะอนุญาตแค่ `http://localhost:3000` (dev)
    ```
    cp .env.example .env
    ```
@@ -37,8 +38,8 @@ React 19 + TypeScript + Vite · Express · MySQL · Tailwind CSS
 
 มี Docker setup พร้อมใช้ใน [backend/Dockerfile](backend/Dockerfile) และ [backend/docker-compose.yml](backend/docker-compose.yml) สำหรับรัน backend แบบ container โดยแยกอิสระจาก frontend ซึ่ง build เป็น static site แล้ว deploy ขึ้น Vercel/Netlify ได้ (`npm run build` → โฟลเดอร์ `dist/`)
 
-## ✅ ระบบยืนยันตัวตน
+## ✅ ระบบยืนยันตัวตน & CORS
 
-API หลังบ้านตรวจสอบสิทธิ์ด้วย PIN → bearer token ที่เซิร์ฟเวอร์เป็นคนออกให้แล้ว (ดู `backend/server.js` — `requireAuth`) ทุก endpoint ที่แก้ไข/อ่านข้อมูลอ่อนไหวต้องผ่าน token ก่อน ยกเว้น `GET /api/state` ที่เปิดสาธารณะไว้เพื่อรองรับหน้าจอคิว (`/?queue`) ที่ออกแบบให้ดูได้โดยไม่ต้อง login
+API หลังบ้านตรวจสอบสิทธิ์ด้วย PIN → bearer token ที่เซิร์ฟเวอร์เป็นคนออกให้แล้ว (ดู `backend/server.js` — `requireAuth`) ทุก endpoint ที่แก้ไข/อ่านข้อมูลอ่อนไหวต้องผ่าน token ก่อน ยกเว้น `GET /api/state` ที่เปิดสาธารณะไว้เพื่อรองรับหน้าจอคิว (`/?queue`) ที่ออกแบบให้ดูได้โดยไม่ต้อง login — และ CORS จำกัดเฉพาะโดเมนที่ตั้งไว้ใน `CORS_ORIGIN` แล้ว ไม่เปิดกว้างให้ทุกเว็บเรียกได้เหมือนเดิม
 
 สิ่งที่ยังควรทำต่อก่อนขยายสเกล ดูในหัวข้อ "แผนต่อยอด" ของ [PROJECT-OVERVIEW.md](PROJECT-OVERVIEW.md) (เช่น multi-tenant, automated test)

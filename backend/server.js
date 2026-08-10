@@ -15,7 +15,27 @@ const port = process.env.PORT || 3001;
 // real client for login rate-limiting instead of the proxy's own address.
 app.set('trust proxy', 1);
 
-app.use(cors());
+// CORS — restrict browser cross-origin access to known frontend origin(s) instead
+// of reflecting every origin. Configure via CORS_ORIGIN (comma-separated) to match
+// wherever the frontend is actually deployed (Vercel, a custom domain, etc.).
+// Falls back to the local Vite dev origin so `npm run dev` keeps working out of
+// the box. Requests with no Origin header (curl, server-to-server, same-origin
+// page loads) are always allowed — this only gates browser cross-origin fetches.
+const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000')
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean);
+
+if (!process.env.CORS_ORIGIN) {
+  console.warn(`⚠️  CORS_ORIGIN ไม่ได้ตั้งใน .env — อนุญาตแค่ ${allowedOrigins.join(', ')} (dev) ตั้งค่าเป็นโดเมนจริงของ frontend ก่อน deploy จริง`);
+}
+
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    callback(new Error(`CORS: origin ${origin} ไม่อยู่ใน allowlist`));
+  }
+}));
 app.use(express.json({ limit: '50mb' }));
 
 // Serve static assets from the frontend build
