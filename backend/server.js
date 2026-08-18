@@ -38,6 +38,16 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '50mb' }));
 
+// เซฟตี้เน็ต: DB อยู่คนละ VPS กับ backend ผ่านอินเทอร์เน็ตสาธารณะ — บางครั้ง connection ค้าง
+// เงียบๆ โดยไม่ error (ไม่มี query timeout ตั้งไว้) ทำให้ request ค้างไม่ตอบกลับเลย ถ้าเกิดขึ้น
+// ให้ตอบ 503 หลัง 20 วิแทนที่จะปล่อยให้ client รอไม่รู้จบ
+app.use((req, res, next) => {
+  res.setTimeout(20000, () => {
+    if (!res.headersSent) res.status(503).json({ error: 'เซิร์ฟเวอร์ตอบสนองช้าเกินไป กรุณาลองใหม่อีกครั้ง' });
+  });
+  next();
+});
+
 // Serve static assets from the frontend build
 app.use(express.static(path.join(__dirname, '../dist')));
 
