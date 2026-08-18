@@ -1,15 +1,17 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Users, TrendingUp, Calendar, Search, LogOut, Check, ChevronUp, ChevronDown,
-  Trash2, ShoppingCart, UserPlus, Clock, Trophy, FileText, ChevronLeft, Bolt, Banknote, X, Plus, RefreshCw, Monitor, Cloud, Upload, Download, CheckCircle2, History, Gift
+  Trash2, ShoppingCart, UserPlus, Clock, Trophy, FileText, ChevronLeft, Bolt, Banknote, X, Plus, RefreshCw, Monitor, Cloud, Upload, Download, CheckCircle2, History, Gift, QrCode, Wallet
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { QRCodeSVG } from 'qrcode.react';
 import { cn } from '../lib/utils';
 import { Member, Court, PaymentRecord, GameRecord, Snack, Rank, RANKS, RANK_COLORS, RANK_LEVEL_LABELS, SessionRecord, RANK_WEIGHTS } from '../types';
 import { format } from 'date-fns';
 import { th } from 'date-fns/locale';
 import { POSModal } from './POSModal';
 import { useModalHotkeys } from '../hooks/useModalHotkeys';
+import { buildPromptPayPayload } from '../lib/promptpay';
 
 interface Props {
   members: Member[];
@@ -38,21 +40,24 @@ interface Props {
   isSyncing: boolean;
   onImportLine: () => void;
   sessionStartDate?: number | null;
+  /** เบอร์/เลขพร้อมเพย์ของร้าน — ว่าง = ยังไม่ได้ตั้งค่า จะไม่มีตัวเลือก QR ให้เลือกตอนเช็คบิล */
+  promptPayId: string;
 }
 
 
 
 // Modal showing a player's checkout details (snacks, games, and payment)
-function CheckoutModal({ member, gameHistory, otherMembers, paymentHistory = [], initialOthers = [], onUpdateRank, onRemoveSnack, onUpdateSnackPrice, onPay, onReOpen, isReadOnly, onClose }: {
+function CheckoutModal({ member, gameHistory, otherMembers, paymentHistory = [], initialOthers = [], promptPayId, onUpdateRank, onRemoveSnack, onUpdateSnackPrice, onPay, onReOpen, isReadOnly, onClose }: {
   member: Member;
   gameHistory: GameRecord[];
   otherMembers: Member[];
   paymentHistory?: PaymentRecord[];
   initialOthers?: string[];
+  promptPayId: string;
   onUpdateRank: (memberId: string, rank: Rank) => void;
   onRemoveSnack: (memberId: string, snackIndex: number) => void;
   onUpdateSnackPrice: (memberId: string, index: number, price: number) => void;
-  onPay: (amount: number, otherMemberIds: string[]) => void;
+  onPay: (amount: number, otherMemberIds: string[], method: string) => void;
   onReOpen: (memberId: string) => void;
   isReadOnly: boolean;
   onClose: () => void;
@@ -69,6 +74,11 @@ function CheckoutModal({ member, gameHistory, otherMembers, paymentHistory = [],
   const [editingSnackIndex, setEditingSnackIndex] = useState<number | null>(null);
   const [tempPrice, setTempPrice] = useState<string>('');
 
+  // วิธีจ่าย: เงินสด (ค่าเริ่มต้น) หรือ PromptPay — เลือก PromptPay แล้วโชว์ QR ให้ลูกค้าสแกน
+  // (รวมยอดของคนอื่นที่เลือกจ่ายด้วยกันอยู่แล้วผ่าน displayAmount ด้านบน ไม่ต้องทำอะไรเพิ่ม)
+  const [payMethod, setPayMethod] = useState<'cash' | 'promptpay'>('cash');
+  const promptPayPayload = payMethod === 'promptpay' ? buildPromptPayPayload(promptPayId, displayAmount) : null;
+
   // ดึง snack history จาก PaymentRecord สำหรับคนที่จ่ายแล้ว (snackHistory จะถูกล้างหลังจ่าย)
   const isPaid = member.status === 'paid';
   const paidSnackHistory = isPaid
@@ -82,7 +92,9 @@ function CheckoutModal({ member, gameHistory, otherMembers, paymentHistory = [],
   useModalHotkeys({
     onClose,
     onSubmit: () => {
-      if (!isReadOnly && member.status !== 'paid' && displayAmount >= 0) onPay(displayAmount, selectedOthers);
+      if (!isReadOnly && member.status !== 'paid' && displayAmount >= 0) {
+        onPay(displayAmount, selectedOthers, payMethod === 'promptpay' ? 'PromptPay' : 'Cash');
+      }
     },
   });
 
@@ -92,12 +104,12 @@ function CheckoutModal({ member, gameHistory, otherMembers, paymentHistory = [],
         className="absolute inset-0 bg-on-surface/50 backdrop-blur-sm" />
       <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
         onClick={e => e.stopPropagation()}
-        className="bg-white rounded-[2.5rem] w-full max-w-2xl p-8 shadow-2xl relative z-10 max-h-[85vh] flex flex-col">
+        className="bg-white rounded-[1.75rem] sm:rounded-[2.5rem] w-full max-w-2xl p-5 sm:p-8 shadow-2xl relative z-10 max-h-[85vh] flex flex-col">
 
         {/* Header */}
-        <div className="flex items-center gap-5 mb-6">
+        <div className="flex items-center gap-3 sm:gap-5 mb-5 sm:mb-6">
           <div className="relative group/rank">
-            <div className={cn('w-16 h-16 rounded-[1.5rem] flex items-center justify-center font-black text-xl shrink-0 shadow-lg', RANK_COLORS[member.rank])}>
+            <div className={cn('w-12 h-12 sm:w-16 sm:h-16 rounded-2xl sm:rounded-[1.5rem] flex items-center justify-center font-black text-base sm:text-xl shrink-0 shadow-lg', RANK_COLORS[member.rank])}>
               {member.rank}
             </div>
             {!isReadOnly && (
@@ -113,7 +125,7 @@ function CheckoutModal({ member, gameHistory, otherMembers, paymentHistory = [],
             )}
           </div>
           <div className="flex-1 min-w-0">
-            <h2 className="font-headline font-black text-3xl tracking-tight leading-none mb-2">{member.name}</h2>
+            <h2 className="font-headline font-black text-xl sm:text-3xl tracking-tight leading-tight sm:leading-none mb-1 sm:mb-2 truncate">{member.name}</h2>
             <div className="flex items-center gap-2">
               {RANK_LEVEL_LABELS[member.rank] && (
                 <>
@@ -124,11 +136,11 @@ function CheckoutModal({ member, gameHistory, otherMembers, paymentHistory = [],
               <span className="text-xs font-semibold text-on-surface/45">{member.gamesPlayed} เกมส์</span>
             </div>
           </div>
-          <button onClick={onClose} className="p-2.5 rounded-full hover:bg-background shrink-0 text-on-surface/20 hover:text-on-surface transition-colors"><X size={24} /></button>
+          <button onClick={onClose} className="p-2 sm:p-2.5 rounded-full hover:bg-background shrink-0 text-on-surface/20 hover:text-on-surface transition-colors"><X size={22} /></button>
         </div>
 
         {/* Cost summary cards */}
-        <div className="grid grid-cols-2 gap-3 mb-6">
+        <div className="grid grid-cols-2 gap-2 sm:gap-3 mb-5 sm:mb-6">
           <div className="bg-primary/5 rounded-[1.5rem] p-4 text-center border border-primary/5">
             <p className="text-xs font-semibold text-primary/50 mb-1">ยอดรวม (ค่ากิจกรรม / ค่าลูก)</p>
             <p className="font-headline font-black text-2xl text-primary">฿{((member.totalCourt ?? member.courtBalance) + (member.totalShuttle ?? member.shuttleBalance)).toFixed(0)}</p>
@@ -247,6 +259,49 @@ function CheckoutModal({ member, gameHistory, otherMembers, paymentHistory = [],
               </div>
             )}
           </div>
+
+          {/* วิธีจ่าย — โชว์แค่ตอนตั้งเบอร์ PromptPay ไว้แล้ว และยังไม่ได้จ่าย
+              อยู่ในโซน scroll เดียวกับรายการอื่นๆ (ไม่ใช่ footer ที่ตายตัว) เพราะ QR ทำให้เนื้อหา
+              สูงเกิน 85vh ได้ง่าย — ถ้าปักไว้ที่ footer แบบตายตัว มันจะดันล้นกรอบ modal ออกไปแทนที่จะ scroll */}
+          {!isReadOnly && member.status !== 'paid' && promptPayId && (
+            <div className="space-y-3">
+              <div className="flex bg-background p-1 rounded-2xl gap-1">
+                <button
+                  onClick={() => setPayMethod('cash')}
+                  className={cn('flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold text-sm transition-all',
+                    payMethod === 'cash' ? 'bg-white text-on-surface shadow-sm' : 'text-on-surface/40 hover:text-on-surface/60')}
+                >
+                  <Wallet size={15} /> เงินสด
+                </button>
+                <button
+                  onClick={() => setPayMethod('promptpay')}
+                  className={cn('flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold text-sm transition-all',
+                    payMethod === 'promptpay' ? 'bg-white text-on-surface shadow-sm' : 'text-on-surface/40 hover:text-on-surface/60')}
+                >
+                  <QrCode size={15} /> พร้อมเพย์
+                </button>
+              </div>
+
+              {/* QR พร้อมเพย์ — gen ใหม่ทุกครั้งที่ยอดเปลี่ยน (รวมยอดคนอื่นที่จ่ายด้วยกันอยู่แล้วผ่าน displayAmount) */}
+              {payMethod === 'promptpay' && (
+                <div className="flex flex-col items-center gap-3 bg-primary/5 border border-primary/10 rounded-3xl p-5">
+                  {promptPayPayload ? (
+                    <>
+                      <div className="bg-white p-3 rounded-2xl shadow-sm">
+                        <QRCodeSVG value={promptPayPayload} size={168} level="M" />
+                      </div>
+                      <div className="text-center">
+                        <p className="text-xs font-bold text-on-surface/40">สแกนจ่ายผ่านแอปธนาคาร</p>
+                        <p className="font-headline font-black text-2xl text-primary">฿{displayAmount.toLocaleString()}</p>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-xs font-semibold text-on-surface/40 py-4">ใส่ยอดที่มากกว่า 0 เพื่อสร้าง QR</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Bulk Payment Details label */}
@@ -264,13 +319,14 @@ function CheckoutModal({ member, gameHistory, otherMembers, paymentHistory = [],
           </div>
         )}
 
-        {/* Footer Checkout */}
-        <div className="mt-8 pt-6 border-t border-on-surface/5 flex flex-col gap-4">
-          <div className="flex items-center justify-between gap-6">
-            <div className="flex-1">
+        {/* Footer Checkout — ตายตัวอยู่ล่างสุดเสมอ (ไม่ scroll) เก็บแค่ยอด/ปุ่มจ่ายเงินเท่านั้น
+            ส่วนตัวเลือกวิธีจ่าย/QR ย้ายไปอยู่ในโซน scroll ด้านบนแล้ว กัน modal ตก layout เวลา QR โผล่มา */}
+        <div className="mt-6 sm:mt-8 pt-5 sm:pt-6 border-t border-on-surface/5 flex flex-col gap-4">
+          <div className="flex items-center justify-between gap-3 sm:gap-6">
+            <div className="flex-1 min-w-0">
               <p className="text-xs font-bold text-on-surface/40 mb-1">ยอดเงินที่รับมาจริง</p>
               <div className="flex items-baseline gap-1 group">
-                <span className="font-black text-2xl text-error/40 group-focus-within:text-error transition-colors">฿</span>
+                <span className="font-black text-xl sm:text-2xl text-error/40 group-focus-within:text-error transition-colors">฿</span>
                 <input
                   type="number"
                   value={displayAmount}
@@ -278,10 +334,10 @@ function CheckoutModal({ member, gameHistory, otherMembers, paymentHistory = [],
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !isReadOnly && member.status !== 'paid' && displayAmount >= 0) {
                       e.stopPropagation();
-                      onPay(displayAmount, selectedOthers);
+                      onPay(displayAmount, selectedOthers, payMethod === 'promptpay' ? 'PromptPay' : 'Cash');
                     }
                   }}
-                  className="bg-transparent border-none p-0 font-headline font-black text-4xl text-error tracking-tight focus:ring-0 w-full"
+                  className="bg-transparent border-none p-0 font-headline font-black text-2xl sm:text-4xl text-error tracking-tight focus:ring-0 w-full min-w-0"
                 />
               </div>
               {manualAmount !== null && manualAmount !== totalBalance && manualAmount >= 0 && (
@@ -290,15 +346,15 @@ function CheckoutModal({ member, gameHistory, otherMembers, paymentHistory = [],
             </div>
             {!isReadOnly && member.status !== 'paid' && displayAmount >= 0 && (
               <button
-                onClick={() => onPay(displayAmount, selectedOthers)}
-                className="flex-1 max-w-[200px] flex items-center justify-center gap-3 bg-primary text-white py-4 rounded-[1.5rem] font-black text-lg shadow-xl shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all"
+                onClick={() => onPay(displayAmount, selectedOthers, payMethod === 'promptpay' ? 'PromptPay' : 'Cash')}
+                className="flex-1 max-w-[160px] sm:max-w-[200px] flex items-center justify-center gap-2 sm:gap-3 bg-primary text-white py-3 sm:py-4 rounded-2xl sm:rounded-[1.5rem] font-black text-sm sm:text-lg shadow-xl shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all"
               >
-                <Banknote size={24} />
-                รับเงิน & ปิดยอด
+                <Banknote size={22} className="shrink-0" />
+                <span className="whitespace-nowrap">รับเงิน & ปิดยอด</span>
               </button>
             )}
             {member.status === 'paid' && (
-              <div className="flex flex-col gap-2 flex-1 max-w-[200px]">
+              <div className="flex flex-col gap-2 flex-1 max-w-[160px] sm:max-w-[200px]">
                 <div className="flex items-center justify-center gap-2 text-green-500 font-black text-sm px-5 py-3 bg-green-500/10 rounded-2xl">
                   <CheckCircle2 size={20} />
                   จ่ายเรียบร้อย
@@ -428,7 +484,8 @@ export function DashboardTab({
   onAddCourt, isSidebarCollapsed, onCheckIn, onRemove, onResetDay,
   onClearBoard, onUpdateGame,
   isSyncing, onImportLine,
-  sessionStartDate
+  sessionStartDate,
+  promptPayId
 }: Props) {
   // เก็บแค่ id ไม่เก็บ snapshot ของ Member ทั้งก้อน — เดี๋ยว modal จะได้อ่านข้อมูลสดจาก currentMembers
   // เสมอ (ไม่งั้นพอลบสินค้า/แก้ไขอะไรระหว่างเปิด modal อยู่ จะไม่เห็นการเปลี่ยนแปลงจนกว่าจะปิดเปิดใหม่)
@@ -657,8 +714,8 @@ export function DashboardTab({
           </div>
         </div>
 
-        <div className="flex bg-background p-1.5 rounded-3xl gap-1.5 shadow-inner">
-          <div className="relative group">
+        <div className="flex flex-wrap items-stretch bg-background p-1.5 rounded-3xl gap-1.5 shadow-inner">
+          <div className="relative group flex-1 sm:flex-none min-w-[140px]">
             <Calendar size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-on-surface/30 group-focus-within:text-primary transition-colors z-10" />
             <input
               type="date"
@@ -689,30 +746,30 @@ export function DashboardTab({
                   }
                 }
               }}
-              className="bg-white pl-10 pr-4 py-2.5 rounded-2xl font-semibold text-sm text-on-surface/60 outline-none border border-on-surface/5 focus:border-primary/20 appearance-none transition-all cursor-pointer min-w-[200px]"
+              className="w-full bg-white pl-10 pr-3 sm:pr-4 py-2.5 rounded-2xl font-semibold text-sm text-on-surface/60 outline-none border border-on-surface/5 focus:border-primary/20 appearance-none transition-all cursor-pointer sm:min-w-[200px]"
             />
           </div>
 
           {isReadOnly ? (
             <button
               onClick={onCloseSession}
-              className="px-5 py-2.5 bg-primary text-white rounded-2xl font-bold text-sm shadow-lg shadow-primary/20 hover:scale-105 active:scale-95 transition-all flex items-center gap-2"
+              className="flex-1 sm:flex-none justify-center px-5 py-2.5 bg-primary text-white rounded-2xl font-bold text-sm shadow-lg shadow-primary/20 hover:scale-105 active:scale-95 transition-all flex items-center gap-2 whitespace-nowrap"
             >
               <Monitor size={15} /> ดูวันนี้
             </button>
           ) : (
-            <div className="flex gap-2">
+            <div className="flex gap-1.5 flex-1 sm:flex-none">
               <button
                 onClick={onClearBoard}
-                className="px-5 py-2.5 bg-background text-on-surface/50 rounded-2xl font-bold text-sm border border-on-surface/10 hover:bg-on-surface/5 active:scale-95 transition-all flex items-center gap-2"
+                className="flex-1 sm:flex-none justify-center px-4 sm:px-5 py-2.5 bg-white text-on-surface/50 rounded-2xl font-bold text-sm border border-on-surface/10 hover:bg-on-surface/5 active:scale-95 transition-all flex items-center gap-2 whitespace-nowrap"
               >
-                <Trash2 size={15} /> ล้างกระดาน
+                <Trash2 size={15} /> <span>ล้างกระดาน</span>
               </button>
               <button
                 onClick={onResetDay}
-                className="px-5 py-2.5 bg-error text-white rounded-2xl font-bold text-sm shadow-lg shadow-error/20 hover:scale-105 active:scale-95 transition-all flex items-center gap-2"
+                className="flex-1 sm:flex-none justify-center px-4 sm:px-5 py-2.5 bg-error text-white rounded-2xl font-bold text-sm shadow-lg shadow-error/20 hover:scale-105 active:scale-95 transition-all flex items-center gap-2 whitespace-nowrap"
               >
-                <RefreshCw size={15} /> จบวันและสรุปยอด
+                <RefreshCw size={15} /> <span>จบวันและสรุปยอด</span>
               </button>
             </div>
           )}
@@ -782,8 +839,8 @@ export function DashboardTab({
 
       {/* ── Main Player Table ── */}
       <div className="bg-white rounded-3xl shadow-sm border border-on-surface/5 overflow-hidden">
-        <div className="px-6 py-4 border-b border-on-surface/5 flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
+        <div className="px-4 sm:px-6 py-4 border-b border-on-surface/5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-center gap-3 sm:gap-4 flex-wrap">
             <h2 className="font-headline font-black text-xl">ลูกค้าที่เล่นวันนี้</h2>
             <span className="hidden lg:inline text-[11px] font-semibold text-on-surface/30">
               ↑↓ เลื่อน • Enter ดูข้อมูล • / ขายของ
@@ -797,16 +854,16 @@ export function DashboardTab({
             )}
             <button
               onClick={onImportLine}
-              className="flex items-center gap-2 bg-primary text-white px-4 py-2 rounded-xl font-bold text-sm shadow-lg shadow-primary/20 hover:scale-105 active:scale-95 transition-all"
+              className="flex items-center gap-2 bg-primary text-white px-3 sm:px-4 py-2 rounded-xl font-bold text-xs sm:text-sm shadow-lg shadow-primary/20 hover:scale-105 active:scale-95 transition-all whitespace-nowrap"
             >
-              <FileText size={14} /> ลงชื่อวันนี้ (ก๊อปรายชื่อไลน์)
+              <FileText size={14} /> ลงชื่อวันนี้ <span className="hidden sm:inline">(ก๊อปรายชื่อไลน์)</span>
               <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md border border-white/30 text-white/80">+</span>
             </button>
             {!isReadOnly && (
               <button
                 onClick={() => setTreatStep('payer')}
                 disabled={todayPlayers.length < 2}
-                className="flex items-center gap-2 bg-orange-500 text-white px-4 py-2 rounded-xl font-bold text-sm shadow-lg shadow-orange-500/20 hover:scale-105 active:scale-95 transition-all disabled:opacity-40 disabled:scale-100 disabled:cursor-not-allowed"
+                className="flex items-center gap-2 bg-orange-500 text-white px-3 sm:px-4 py-2 rounded-xl font-bold text-xs sm:text-sm shadow-lg shadow-orange-500/20 hover:scale-105 active:scale-95 transition-all disabled:opacity-40 disabled:scale-100 disabled:cursor-not-allowed whitespace-nowrap"
                 title={todayPlayers.length < 2 ? "ต้องมีคนมาตีอย่างน้อย 2 คนก่อน" : "เลือกคนจ่ายแล้วเลือกคนรับ"}
               >
                 <Gift size={14} /> เสียน้ำให้เพื่อน
@@ -814,7 +871,7 @@ export function DashboardTab({
             )}
           </div>
           <div className="flex flex-col md:flex-row items-start md:items-center gap-3">
-            <div className="relative group flex-1 w-48">
+            <div className="relative group flex-1 w-full md:w-48">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface/30 group-focus-within:text-primary transition-colors" size={14} />
               <input
                 ref={searchInputRef}
@@ -849,8 +906,8 @@ export function DashboardTab({
           </div>
         </div>
 
-        {/* Table header */}
-        <div className="grid grid-cols-12 gap-2 px-6 py-3 bg-background text-xs font-bold uppercase tracking-wider text-on-surface/45 border-b border-on-surface/5">
+        {/* Table header — desktop/tablet only; mobile rows are self-labeled cards instead */}
+        <div className="hidden md:grid grid-cols-12 gap-2 px-6 py-3 bg-background text-xs font-bold uppercase tracking-wider text-on-surface/45 border-b border-on-surface/5">
           <div className="col-span-3 flex items-center gap-3">
             {!isReadOnly && (
               <input
@@ -935,18 +992,135 @@ export function DashboardTab({
             // ส่วน hover:/group-hover: ด้านล่างคือ feedback ปกติของเมาส์ แยกกันคนละเรื่อง ไม่ทับกัน
             const isHighlighted = idx === highlightedIndex;
             return (
-              <div
-                key={m.id}
-                ref={el => { rowRefs.current[idx] = el; }}
-                onClick={() => setSelectedMemberId(m.id)}
-                className={cn(
-                  "w-full grid grid-cols-12 gap-3 md:gap-4 px-6 py-5 md:py-6 transition-all text-left group items-center cursor-pointer",
-                  isHighlighted ? "border-2 border-primary/40" : "border-2 border-transparent",
-                  isSettled
-                    ? cn("hover:bg-green-100/50", isHighlighted ? "bg-green-100/50" : "bg-green-100/30")
-                    : cn("hover:bg-primary/5", isHighlighted ? "bg-primary/5" : "bg-white")
-                )}
-              >
+              <div key={m.id} ref={el => { rowRefs.current[idx] = el; }}>
+                {/* ── Mobile card (below md) — same data as the desktop row below, laid out for a phone ── */}
+                <div
+                  onClick={() => setSelectedMemberId(m.id)}
+                  className={cn(
+                    "md:hidden flex flex-col gap-3 px-4 py-4 border-b border-on-surface/5 transition-all cursor-pointer",
+                    isHighlighted ? "ring-2 ring-inset ring-primary/40" : "",
+                    isSettled
+                      ? (isHighlighted ? "bg-green-100/50" : "bg-green-100/30")
+                      : (isHighlighted ? "bg-primary/5" : "bg-white")
+                  )}
+                >
+                  <div className="flex items-center gap-3">
+                    {!isReadOnly && m.balance > 0 && (
+                      <input
+                        type="checkbox"
+                        checked={checkedIds.includes(m.id)}
+                        onClick={e => e.stopPropagation()}
+                        onChange={(e) => {
+                          setCheckedIds(prev => e.target.checked ? [...prev, m.id] : prev.filter(id => id !== m.id));
+                        }}
+                        className="w-4 h-4 shrink-0 rounded border-on-surface/10 text-primary focus:ring-primary/20"
+                      />
+                    )}
+                    <div className="relative shrink-0">
+                      <div className={cn('w-11 h-11 rounded-xl flex items-center justify-center font-black text-sm shadow-sm', RANK_COLORS[m.rank])}>
+                        {m.rank}
+                      </div>
+                      {!isReadOnly && (
+                        <select
+                          value={m.rank}
+                          onChange={(e) => { e.stopPropagation(); onUpdateRank(m.id, e.target.value as Rank); }}
+                          onClick={e => e.stopPropagation()}
+                          className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                          title="เปลี่ยนระดับมือ"
+                        >
+                          {RANKS.map(r => <option key={r} value={r}>{r} ({RANK_LEVEL_LABELS[r]})</option>)}
+                        </select>
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className={cn("font-bold text-sm truncate", isSettled ? "text-green-700" : "")}>{m.name}</p>
+                      {m.paidByName && (
+                        <p className="text-xs font-semibold text-green-600 flex items-center gap-1">
+                          <Check size={9} /> จ่ายโดย {m.paidByName}
+                        </p>
+                      )}
+                      <div className="flex items-center gap-2 mt-1 flex-wrap">
+                        <span className={cn('text-[11px] font-bold px-2 py-0.5 rounded-full',
+                          isSettled ? 'bg-green-500 text-white' :
+                            m.status === 'playing' ? 'bg-green-100 text-green-700' :
+                              m.status === 'waiting' ? 'bg-secondary/10 text-secondary' : 'bg-on-surface/5 text-on-surface/30')}>
+                          {isSettled ? '✓ จ่ายแล้ว' : m.status === 'playing' ? '🏸 เล่น' : m.status === 'waiting' ? '⌛ รอ' : '😴 พักค้าง'}
+                        </span>
+                        {(m.status === 'resting' || isSettled) && !isReadOnly && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); onCheckIn(m.id); }}
+                            className="text-[11px] font-bold bg-primary text-white px-2.5 py-0.5 rounded-full active:scale-95 transition-transform flex items-center gap-1"
+                          >
+                            <UserPlus size={10} strokeWidth={3} /> {isSettled ? 'กลับมาตีใหม่' : 'เช็คอิน'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    {!isReadOnly && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onRemove(m.id); }}
+                        className="p-2 shrink-0 text-on-surface/20 hover:text-error hover:bg-error/10 rounded-lg transition-all"
+                        title="ลบออกจากเซสชัน"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Cost breakdown — labeled, since there's no table header on mobile */}
+                  <div className="grid grid-cols-4 gap-2 pt-3 border-t border-on-surface/5">
+                    <div className="text-center">
+                      <p className="text-[10px] font-bold text-on-surface/35 uppercase tracking-wide">เกม</p>
+                      <p className="text-sm font-black text-on-surface/70 mt-0.5">{m.gamesPlayed}</p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-[10px] font-bold text-on-surface/35 uppercase tracking-wide">สนาม</p>
+                      <p className={cn('text-sm font-bold mt-0.5', (m.totalCourt || m.courtBalance) > 0 ? 'text-primary' : 'text-on-surface/20')}>
+                        {(m.totalCourt || m.courtBalance) > 0 ? `฿${(m.totalCourt || m.courtBalance).toFixed(0)}` : '—'}
+                      </p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-[10px] font-bold text-on-surface/35 uppercase tracking-wide">ลูก</p>
+                      <p className={cn('text-sm font-bold mt-0.5', (m.totalShuttle || m.shuttleBalance) > 0 ? 'text-secondary' : 'text-on-surface/20')}>
+                        {(m.totalShuttle || m.shuttleBalance) > 0 ? `฿${(m.totalShuttle || m.shuttleBalance).toFixed(0)}` : '—'}
+                      </p>
+                    </div>
+                    <button
+                      onClick={(e) => { if (!isReadOnly && !isSettled) { e.stopPropagation(); setPosTarget(m); } }}
+                      className="text-center"
+                    >
+                      <p className="text-[10px] font-bold text-on-surface/35 uppercase tracking-wide flex items-center justify-center gap-0.5">
+                        สินค้า {!isReadOnly && !isSettled && <ShoppingCart size={9} className="text-tertiary" />}
+                      </p>
+                      <p className={cn('text-sm font-bold mt-0.5', (m.totalSnack || m.snackBalance) > 0 ? 'text-tertiary' : 'text-on-surface/20')}>
+                        {(m.totalSnack || m.snackBalance) > 0 ? `฿${(m.totalSnack || m.snackBalance).toFixed(0)}` : '—'}
+                      </p>
+                    </button>
+                  </div>
+
+                  {/* Total */}
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-xs font-bold text-on-surface/40">
+                      {isSettled ? 'ชำระแล้ว' : m.balance > 0 ? 'ค้างชำระ' : 'ยอดรวม'}
+                    </span>
+                    <span className={cn('font-headline font-black text-xl',
+                      isSettled ? "text-green-500" : (m.balance > 0 ? "text-error" : "text-on-surface/20"))}>
+                      ฿{((m.totalCourt || m.courtBalance) + (m.totalShuttle || m.shuttleBalance) + (m.totalSnack || m.snackBalance)).toFixed(0)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* ── Desktop/tablet row (md+) ── */}
+                <div
+                  onClick={() => setSelectedMemberId(m.id)}
+                  className={cn(
+                    "hidden md:grid w-full grid-cols-12 gap-3 md:gap-4 px-6 py-5 md:py-6 transition-all text-left group items-center cursor-pointer",
+                    isHighlighted ? "border-2 border-primary/40" : "border-2 border-transparent",
+                    isSettled
+                      ? cn("hover:bg-green-100/50", isHighlighted ? "bg-green-100/50" : "bg-green-100/30")
+                      : cn("hover:bg-primary/5", isHighlighted ? "bg-primary/5" : "bg-white")
+                  )}
+                >
                 {/* Name + rank */}
                 <div className="col-span-3 flex items-center gap-3 min-w-0">
                   {!isReadOnly && m.balance > 0 && (
@@ -1091,6 +1265,7 @@ export function DashboardTab({
                     )}
                   </div>
                 </div>
+                </div>
               </div>
             );
           })}
@@ -1110,18 +1285,41 @@ export function DashboardTab({
                     setBulkCheckoutInfo({ memberId: mainMember.id, others: checkedIds.slice(1) });
                   }
                 }}
-                className="bg-primary text-white px-8 py-4 rounded-2xl font-black text-sm shadow-2xl shadow-primary/40 flex items-center gap-3 hover:scale-105 active:scale-95 transition-all"
+                className="bg-primary text-white px-5 sm:px-8 py-3 sm:py-4 rounded-2xl font-black text-sm shadow-2xl shadow-primary/40 flex items-center gap-2 sm:gap-3 hover:scale-105 active:scale-95 transition-all whitespace-nowrap"
               >
                 <Banknote size={20} /> ชำระเงินที่เลือก ({checkedIds.length} คน)
               </button>
             </motion.div>
           )}
-          <div className="grid grid-cols-12 gap-2 px-6 py-5 border-t-2 border-on-surface/5 bg-on-surface/2 font-black text-sm">
+          {/* Desktop/tablet: one summary row across the same 12-col grid as the table */}
+          <div className="hidden md:grid grid-cols-12 gap-2 px-6 py-5 border-t-2 border-on-surface/5 bg-on-surface/2 font-black text-sm">
             <div className="col-span-4 text-on-surface/40 uppercase tracking-widest text-xs">สรุปยอดรวมวันนี้</div>
             <div className="col-span-2 text-right text-primary">฿{filteredMembers.reduce((a, m) => a + (m.totalCourt || m.courtBalance), 0).toFixed(0)}</div>
             <div className="col-span-2 text-right text-secondary">฿{filteredMembers.reduce((a, m) => a + (m.totalShuttle || m.shuttleBalance), 0).toFixed(0)}</div>
             <div className="col-span-2 text-right text-tertiary">฿{filteredMembers.reduce((a, m) => a + (m.totalSnack || m.snackBalance), 0).toFixed(0)}</div>
             <div className="col-span-2 text-right text-error text-2xl font-headline">฿{filteredMembers.reduce((a, m) => a + ((m.totalCourt || m.courtBalance) + (m.totalShuttle || m.shuttleBalance) + (m.totalSnack || m.snackBalance)), 0).toFixed(0)}</div>
+          </div>
+          {/* Mobile: labeled stacked summary */}
+          <div className="md:hidden px-4 py-4 border-t-2 border-on-surface/5 bg-on-surface/2 space-y-2">
+            <p className="text-on-surface/40 uppercase tracking-widest text-[11px] font-black">สรุปยอดรวมวันนี้</p>
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div>
+                <p className="text-[10px] font-bold text-on-surface/35 uppercase">ค่าสนาม</p>
+                <p className="font-black text-sm text-primary mt-0.5">฿{filteredMembers.reduce((a, m) => a + (m.totalCourt || m.courtBalance), 0).toFixed(0)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold text-on-surface/35 uppercase">ค่าลูก</p>
+                <p className="font-black text-sm text-secondary mt-0.5">฿{filteredMembers.reduce((a, m) => a + (m.totalShuttle || m.shuttleBalance), 0).toFixed(0)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold text-on-surface/35 uppercase">สินค้า</p>
+                <p className="font-black text-sm text-tertiary mt-0.5">฿{filteredMembers.reduce((a, m) => a + (m.totalSnack || m.snackBalance), 0).toFixed(0)}</p>
+              </div>
+            </div>
+            <div className="flex items-center justify-between pt-2 border-t border-on-surface/5">
+              <span className="text-xs font-black text-on-surface/40">รวมทั้งหมด</span>
+              <span className="text-error text-2xl font-headline font-black">฿{filteredMembers.reduce((a, m) => a + ((m.totalCourt || m.courtBalance) + (m.totalShuttle || m.shuttleBalance) + (m.totalSnack || m.snackBalance)), 0).toFixed(0)}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -1135,12 +1333,13 @@ export function DashboardTab({
             gameHistory={currentGames}
             otherMembers={currentMembers}
             paymentHistory={currentPayments}
+            promptPayId={promptPayId}
             onUpdateRank={onUpdateRank}
             onRemoveSnack={onRemoveSnack}
             onUpdateSnackPrice={onUpdateSnackPrice}
             isReadOnly={isReadOnly}
-            onPay={(amount, otherIds) => {
-              onProcessPayment(activeCheckoutMember.id, amount, 'Cash', otherIds);
+            onPay={(amount, otherIds, method) => {
+              onProcessPayment(activeCheckoutMember.id, amount, method, otherIds);
               setSelectedMemberId(null);
               setBulkCheckoutInfo(null);
               setCheckedIds([]);

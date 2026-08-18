@@ -124,45 +124,98 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-// LOGIN — trade the admin PIN for a bearer token
+// SERVER TIME — public. ใช้เป็นเวลาอ้างอิงตอนเริ่ม session แทนนาฬิกาเครื่องลูกค้า
+// (เครื่องลูกค้าบางเครื่องตั้งวันที่ผิด ทำให้ข้อมูลถูกไปลงวันที่ผิดถ้าใช้ Date.now() ฝั่ง client)
+app.get('/api/time', (req, res) => {
+  res.json({ now: Date.now() });
+});
+
+// LIST CLUBS — public, no PIN/settings exposed. Powers the login screen's club picker.
+app.get('/api/clubs', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT id, name, slug FROM clubs ORDER BY name');
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// CREATE CLUB — gated by a server-only secret (CLUB_BOOTSTRAP_SECRET), separate from the
+// per-club PIN system. This is how the app owner provisions a new club (via curl) — not a
+// public self-serve sign-up flow.
+app.post('/api/clubs', async (req, res) => {
+  const secret = req.headers['x-bootstrap-secret'];
+  if (!process.env.CLUB_BOOTSTRAP_SECRET || secret !== process.env.CLUB_BOOTSTRAP_SECRET) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  const { name, slug, pin } = req.body;
+  if (!name || !slug || !pin) return res.status(400).json({ error: 'ต้องระบุ name, slug, pin' });
+  if (!/^[a-z0-9-]+$/.test(slug)) return res.status(400).json({ error: 'slug ต้องเป็นตัวพิมพ์เล็ก/ตัวเลข/ขีดกลางเท่านั้น' });
+  if (!/^\d{4,8}$/.test(pin)) return res.status(400).json({ error: 'PIN ต้องเป็นตัวเลข 4-8 หลัก' });
+  try {
+    const id = 'club-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    await pool.query(
+      'INSERT INTO clubs (id, name, slug, pin_hash, created_at) VALUES (?, ?, ?, ?, ?)',
+      [id, name, slug, hashPin(pin), Date.now()]
+    );
+    res.json({ success: true, club: { id, name, slug } });
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'slug นี้ถูกใช้ไปแล้ว' });
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// LOGIN — pick a club, trade its PIN for a bearer token scoped to that club
 app.post('/api/login', async (req, res) => {
   const ip = req.ip;
   if (isRateLimited(ip)) {
     return res.status(429).json({ error: 'ลองผิดหลายครั้งเกินไป กรุณารอสักครู่แล้วลองใหม่' });
   }
-  const { pin } = req.body;
+  const { clubSlug, pin } = req.body;
   if (!pin || typeof pin !== 'string') return res.status(400).json({ error: 'กรุณาระบุ PIN' });
 
   try {
-    const [rows] = await pool.query('SELECT admin_pin_hash FROM settings WHERE id = 1');
-    const storedHash = rows[0]?.admin_pin_hash;
-    if (!storedHash || !timingSafeStringEqual(hashPin(pin), storedHash)) {
+    let club;
+    if (clubSlug && typeof clubSlug === 'string') {
+      const [rows] = await pool.query('SELECT id, name, slug, pin_hash FROM clubs WHERE slug = ?', [clubSlug]);
+      club = rows[0];
+    } else {
+      // Backward-compat: a frontend build from before multi-club shipped still sends only
+      // {pin}, no clubSlug (e.g. the live frontend hasn't redeployed yet). If this DB has
+      // exactly one club, log straight into it instead of breaking existing logins — once
+      // there's more than one club we can no longer guess which one, so require clubSlug.
+      const [rows] = await pool.query('SELECT id, name, slug, pin_hash FROM clubs');
+      if (rows.length === 1) club = rows[0];
+      else return res.status(400).json({ error: 'กรุณาเลือกก๊วน' });
+    }
+    if (!club || !club.pin_hash || !timingSafeStringEqual(hashPin(pin), club.pin_hash)) {
       recordFailedLogin(ip);
       return res.status(401).json({ error: 'PIN ไม่ถูกต้อง' });
     }
     clearLoginAttempts(ip);
     const exp = Date.now() + TOKEN_TTL_MS;
-    const token = signToken({ role: 'admin', exp });
-    res.json({ success: true, token, expiresAt: exp });
+    const token = signToken({ role: 'admin', clubId: club.id, exp });
+    res.json({ success: true, token, expiresAt: exp, club: { id: club.id, name: club.name, slug: club.slug } });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// CHANGE PIN — requires a valid session AND the current PIN
+// CHANGE PIN — requires a valid session AND the current PIN, scoped to the caller's club
 app.post('/api/change-pin', requireAuth, async (req, res) => {
   const { currentPin, newPin } = req.body;
   if (!newPin || !/^\d{4,8}$/.test(newPin)) {
     return res.status(400).json({ error: 'PIN ใหม่ต้องเป็นตัวเลข 4-8 หลัก' });
   }
   try {
-    const [rows] = await pool.query('SELECT admin_pin_hash FROM settings WHERE id = 1');
-    const storedHash = rows[0]?.admin_pin_hash;
+    const [rows] = await pool.query('SELECT pin_hash FROM clubs WHERE id = ?', [req.auth.clubId]);
+    const storedHash = rows[0]?.pin_hash;
     if (!storedHash || !timingSafeStringEqual(hashPin(currentPin), storedHash)) {
       return res.status(401).json({ error: 'PIN ปัจจุบันไม่ถูกต้อง' });
     }
-    await pool.query('UPDATE settings SET admin_pin_hash = ? WHERE id = 1', [hashPin(newPin)]);
+    await pool.query('UPDATE clubs SET pin_hash = ? WHERE id = ?', [hashPin(newPin), req.auth.clubId]);
     res.json({ success: true });
   } catch (err) {
     console.error(err);
@@ -170,19 +223,22 @@ app.post('/api/change-pin', requireAuth, async (req, res) => {
   }
 });
 
-// Auto-migrate: ensure payments.details, sessions.members_snapshot, settings.admin_pin_hash exist
+// Auto-migrate: ensure payments.details, sessions.members_snapshot, settings.admin_pin_hash,
+// settings.promptpay_id exist
 (async () => {
   try {
     await pool.query(`ALTER TABLE payments ADD COLUMN IF NOT EXISTS details JSON`);
     await pool.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS members_snapshot LONGTEXT`);
     await pool.query(`ALTER TABLE settings ADD COLUMN IF NOT EXISTS admin_pin_hash VARCHAR(255)`);
-    console.log('✅ DB migration: members_snapshot, payments.details, settings.admin_pin_hash ensured');
+    await pool.query(`ALTER TABLE settings ADD COLUMN IF NOT EXISTS promptpay_id VARCHAR(20)`);
+    console.log('✅ DB migration: members_snapshot, payments.details, settings.admin_pin_hash, settings.promptpay_id ensured');
   } catch (e) {
     // MySQL < 8.0 doesn't support IF NOT EXISTS on ALTER TABLE
     try {
       await pool.query(`ALTER TABLE payments ADD COLUMN details LONGTEXT NULL`);
       await pool.query(`ALTER TABLE sessions ADD COLUMN members_snapshot LONGTEXT NULL`);
       await pool.query(`ALTER TABLE settings ADD COLUMN admin_pin_hash VARCHAR(255) NULL`);
+      await pool.query(`ALTER TABLE settings ADD COLUMN promptpay_id VARCHAR(20) NULL`);
       console.log('✅ DB migration: columns added');
     } catch (e2) {
       // Columns already exist - that's fine
@@ -190,24 +246,91 @@ app.post('/api/change-pin', requireAuth, async (req, res) => {
     }
   }
 
-  // Seed a default PIN hash the first time this runs against a DB with none set yet.
-  try {
-    const [rows] = await pool.query('SELECT admin_pin_hash FROM settings WHERE id = 1');
-    if (rows.length && !rows[0].admin_pin_hash) {
-      const defaultPin = process.env.ADMIN_PIN || '1234';
-      await pool.query('UPDATE settings SET admin_pin_hash = ? WHERE id = 1', [hashPin(defaultPin)]);
-      console.log(`⚠️  ตั้ง PIN เริ่มต้นเป็น "${defaultPin}" — ไปเปลี่ยนที่หน้าตั้งค่าทันทีหลัง deploy จริง`);
+  // ── Multi-club migration ────────────────────────────────────────────────
+  // เดิม: settings มีแถวเดียว (id=1) ใช้ร่วมกันทั้ง DB = ล็อกอินเดียว/ก๊วนเดียวต่อ DB
+  // ใหม่: ตาราง clubs (หลายแถว = หลายก๊วน ในโปรแกรมเดียว/DB เดียว) + club_id บน members/sessions/
+  // system_states เพื่อแยกข้อมูลแต่ละก๊วนออกจากกัน ล็อกอินต้องเลือกก๊วนก่อนถึงจะใส่ PIN ได้
+  const ensureCompositePrimaryKey = async (table, cols) => {
+    try {
+      const [pkCols] = await pool.query(
+        `SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY'`,
+        [table]
+      );
+      const have = pkCols.map(r => r.COLUMN_NAME);
+      if (cols.every(c => have.includes(c)) && have.length === cols.length) return; // already correct
+      await pool.query(`ALTER TABLE ${table} DROP PRIMARY KEY, ADD PRIMARY KEY (${cols.join(', ')})`);
+      console.log(`✅ Multi-club migration: ${table} primary key changed to (${cols.join(', ')})`);
+    } catch (e) {
+      console.warn(`⚠️  Could not verify/update ${table} primary key:`, e.message);
     }
+  };
+
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS clubs (
+        id VARCHAR(50) PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        slug VARCHAR(50) NOT NULL UNIQUE,
+        pin_hash VARCHAR(255),
+        court_fee_per_person DECIMAL(10,2) DEFAULT 40,
+        shuttle_price DECIMAL(10,2) DEFAULT 25,
+        promptpay_id VARCHAR(20),
+        created_at BIGINT NOT NULL
+      )
+    `);
+
+    for (const table of ['members', 'sessions', 'system_states']) {
+      try {
+        await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS club_id VARCHAR(50)`);
+      } catch (e) {
+        try { await pool.query(`ALTER TABLE ${table} ADD COLUMN club_id VARCHAR(50) NULL`); } catch (e2) { /* already exists */ }
+      }
+    }
+
+    // Backfill: รันครั้งเดียว (idempotent — เช็คว่ามีก๊วนอยู่แล้วหรือยังก่อน) สร้างก๊วนแรกจาก
+    // settings เดิม (id=1) แล้วย้ายข้อมูลที่ยังไม่มี club_id ทั้งหมดให้เป็นของก๊วนนี้ — คง PIN เดิมไว้
+    // ให้ล็อกอินได้เหมือนเดิม ไม่มีใครหลุดออกจากระบบ
+    const [existingClubs] = await pool.query('SELECT id FROM clubs LIMIT 1');
+    if (existingClubs.length === 0) {
+      const [settingsRows] = await pool.query('SELECT * FROM settings WHERE id = 1');
+      const s = settingsRows[0] || {};
+      const defaultClubId = 'club-' + Date.now().toString(36);
+      const defaultSlug = process.env.DEFAULT_CLUB_SLUG || 'default';
+      await pool.query(
+        'INSERT INTO clubs (id, name, slug, pin_hash, court_fee_per_person, shuttle_price, promptpay_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [defaultClubId, process.env.DEFAULT_CLUB_NAME || 'ก๊วนของฉัน', defaultSlug, s.admin_pin_hash || null,
+         s.court_fee_per_person ?? 40, s.shuttle_price ?? 25, s.promptpay_id || null, Date.now()]
+      );
+      await pool.query('UPDATE members SET club_id = ? WHERE club_id IS NULL', [defaultClubId]);
+      await pool.query('UPDATE sessions SET club_id = ? WHERE club_id IS NULL', [defaultClubId]);
+      await pool.query('UPDATE system_states SET club_id = ? WHERE club_id IS NULL', [defaultClubId]);
+      console.log(`✅ Multi-club migration: created club "${defaultSlug}" (PIN carried over) and backfilled existing data into it`);
+    }
+
+    // NOT NULL หลัง backfill เสร็จ — กันบั๊กในอนาคตที่ลืมใส่ club_id ให้แถวใหม่แบบเงียบๆ
+    for (const table of ['members', 'sessions', 'system_states']) {
+      try {
+        await pool.query(`ALTER TABLE ${table} MODIFY COLUMN club_id VARCHAR(50) NOT NULL`);
+      } catch (e) {
+        console.warn(`⚠️  Could not enforce NOT NULL on ${table}.club_id yet:`, e.message);
+      }
+    }
+
+    // Primary key ต้องผูกกับ club_id ด้วย ไม่งั้นสองก๊วนที่บังเอิญสุ่ม id/state_key ซ้ำกัน
+    // (เช่น members.id หรือ system_states.state_key = "courts") จะทับข้อมูลกันข้ามก๊วนได้
+    await ensureCompositePrimaryKey('members', ['club_id', 'id']);
+    await ensureCompositePrimaryKey('system_states', ['club_id', 'state_key']);
   } catch (e) {
-    console.error('Failed to seed default PIN:', e);
+    console.error('❌ Multi-club migration failed:', e);
   }
 })();
 
-// PULL MASTER DATA
+// PULL MASTER DATA — scoped to the caller's club
 app.get('/api/master', requireAuth, async (req, res) => {
   try {
-    const [membersRows] = await pool.query('SELECT * FROM members');
-    const [settingsRows] = await pool.query('SELECT * FROM settings WHERE id = 1');
+    const [membersRows] = await pool.query('SELECT * FROM members WHERE club_id = ?', [req.auth.clubId]);
+    const [clubRows] = await pool.query('SELECT * FROM clubs WHERE id = ?', [req.auth.clubId]);
 
     // Format for React App
     const rankMemory = {};
@@ -227,9 +350,11 @@ app.get('/api/master', requireAuth, async (req, res) => {
     res.json({
       members: membersList,
       rankMemory,
-      settings: settingsRows.length > 0 ? {
-        courtFeePerPerson: Number(settingsRows[0].court_fee_per_person),
-        shuttlePrice: Number(settingsRows[0].shuttle_price)
+      club: clubRows.length > 0 ? { id: clubRows[0].id, name: clubRows[0].name, slug: clubRows[0].slug } : null,
+      settings: clubRows.length > 0 ? {
+        courtFeePerPerson: Number(clubRows[0].court_fee_per_person),
+        shuttlePrice: Number(clubRows[0].shuttle_price),
+        promptPayId: clubRows[0].promptpay_id || ''
       } : {}
     });
   } catch (err) {
@@ -238,18 +363,18 @@ app.get('/api/master', requireAuth, async (req, res) => {
   }
 });
 
-// PUSH MASTER DATA
+// PUSH MASTER DATA — scoped to the caller's club
 app.post('/api/master', requireAuth, async (req, res) => {
   const { members, settings } = req.body;
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
 
-    // Update settings
+    // Update settings (now lives on the club's own row, not a shared singleton)
     if (settings) {
       await conn.query(
-        'UPDATE settings SET court_fee_per_person = ?, shuttle_price = ? WHERE id = 1',
-        [settings.courtFeePerPerson, settings.shuttlePrice]
+        'UPDATE clubs SET court_fee_per_person = ?, shuttle_price = ?, promptpay_id = ? WHERE id = ?',
+        [settings.courtFeePerPerson, settings.shuttlePrice, settings.promptPayId ?? null, req.auth.clubId]
       );
     }
 
@@ -257,8 +382,8 @@ app.post('/api/master', requireAuth, async (req, res) => {
     if (members && members.length > 0) {
       for (const m of members) {
         await conn.query(
-          'INSERT INTO members (id, name, rank_tier, is_active) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), rank_tier = VALUES(rank_tier), is_active = VALUES(is_active)',
-          [m.id, m.name, m.rank, m.status !== 'resting']
+          'INSERT INTO members (id, club_id, name, rank_tier, is_active) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), rank_tier = VALUES(rank_tier), is_active = VALUES(is_active)',
+          [m.id, req.auth.clubId, m.name, m.rank, m.status !== 'resting']
         );
       }
     }
@@ -287,15 +412,16 @@ app.post('/api/sync', requireAuth, async (req, res) => {
   try {
     await conn.beginTransaction();
 
-    const sessionId = `session-${timestamp}`;
+    // clubId ในตัว session id กัน id ชนกันข้ามก๊วน (เผื่อสองก๊วนเริ่ม session ที่ timestamp เดียวกันพอดี)
+    const sessionId = `session-${req.auth.clubId}-${timestamp}`;
     const dateInt = new Date(timestamp).getTime();
     const membersSnapshot = JSON.stringify(members);
     const status = final ? 'completed' : 'active';
 
     // Insert/refresh Session
     await conn.query(
-      'INSERT INTO sessions (id, date, status, members_snapshot) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE status = VALUES(status), members_snapshot = VALUES(members_snapshot)',
-      [sessionId, dateInt, status, membersSnapshot]
+      'INSERT INTO sessions (id, club_id, date, status, members_snapshot) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status = VALUES(status), members_snapshot = VALUES(members_snapshot)',
+      [sessionId, req.auth.clubId, dateInt, status, membersSnapshot]
     );
 
     // Upsert Games (update instead of skip, so an edit after the game was already live-synced still applies)
@@ -369,7 +495,7 @@ app.post('/api/sync', requireAuth, async (req, res) => {
 // GET ALL SESSION DATES
 app.get('/api/sessions', requireAuth, async (req, res) => {
   try {
-    const [sessions] = await pool.query('SELECT id, date FROM sessions ORDER BY date DESC');
+    const [sessions] = await pool.query('SELECT id, date FROM sessions WHERE club_id = ? ORDER BY date DESC', [req.auth.clubId]);
     res.json(sessions.map(s => ({ id: s.id, date: Number(s.date) })));
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -388,9 +514,9 @@ app.get('/api/member-history', requireAuth, async (req, res) => {
     const dateMap = new Map();
     const dayKey = (ts) => { const d = new Date(Number(ts)); d.setHours(0,0,0,0); return d.getTime(); };
 
-    const [settingsRows] = await pool.query('SELECT court_fee_per_person, shuttle_price FROM settings LIMIT 1');
-    const courtFee = Number(settingsRows[0]?.court_fee_per_person || 40);
-    const shuttlePrice = Number(settingsRows[0]?.shuttle_price || 25);
+    const [clubRows] = await pool.query('SELECT court_fee_per_person, shuttle_price FROM clubs WHERE id = ?', [req.auth.clubId]);
+    const courtFee = Number(clubRows[0]?.court_fee_per_person || 40);
+    const shuttlePrice = Number(clubRows[0]?.shuttle_price || 25);
 
     const likeNames = names.map(n => `%${n}%`);
     const whereName = likeNames.map(() => 'gp.member_name LIKE ?').join(' OR ');
@@ -405,21 +531,25 @@ app.get('/api/member-history', requireAuth, async (req, res) => {
       FROM sessions s
       JOIN games g ON g.session_id = s.id
       JOIN game_players gp ON gp.game_id = g.id
-      WHERE ${whereName}
+      WHERE s.club_id = ? AND (${whereName})
       GROUP BY s.id, s.date
-    `, likeNames);
+    `, [req.auth.clubId, ...likeNames]);
 
     gameRows.forEach(r => {
       const key = dayKey(r.date);
-      const entry = dateMap.get(key) || { date: Number(r.date), gamesPlayed: 0, cost: 0, paid: 0 };
+      const entry = dateMap.get(key) || { date: Number(r.date), gamesPlayed: 0, cost: 0, paid: 0, shuttlesUsed: 0 };
       entry.gamesPlayed += Number(r.games_played);
       entry.cost += (Number(r.shuttle_total) || 0) + courtFee;
+      // จำนวนลูกจริง (ไม่ใช่ ฿) = แปลงจากยอดค่าลูกที่จ่ายไป / ราคาต่อลูก — วิธีเดียวกับที่ /api/session
+      // ใช้ reconstruct shuttlesUsed จาก shuttle_cost อยู่แล้ว
+      entry.shuttlesUsed = (entry.shuttlesUsed || 0) + Math.round((Number(r.shuttle_total) || 0) / shuttlePrice);
       dateMap.set(key, entry);
     });
 
     // Source 2: members_snapshot
     const [snapRows] = await pool.query(
-      `SELECT date, members_snapshot FROM sessions WHERE ${whereSnap}`, likeNames
+      `SELECT date, members_snapshot FROM sessions WHERE club_id = ? AND (${whereSnap})`,
+      [req.auth.clubId, ...likeNames]
     );
 
     snapRows.forEach(r => {
@@ -443,7 +573,9 @@ app.get('/api/member-history', requireAuth, async (req, res) => {
           // balance=0 แต่เล่นไปแล้ว = จ่ายแล้ว ประมาณค่าจาก settings
           if (cost === 0 && games > 0) cost = courtFee + (games * shuttlePrice);
           const paid = (cost > 0 && court === 0 && shuttle === 0) ? cost : 0;
-          dateMap.set(key, { date: Number(r.date), gamesPlayed: games, cost, paid });
+          // เดา shuttlesUsed จากยอด ฿ ค่าลูก (snapshot เก่าไม่ได้เก็บจำนวนลูกตรงๆ)
+          const shuttlesUsed = Math.round(shuttle / shuttlePrice);
+          dateMap.set(key, { date: Number(r.date), gamesPlayed: games, cost, paid, shuttlesUsed });
         } else {
           const entry = dateMap.get(key);
           if (snack > 0) entry.cost += snack;
@@ -463,8 +595,8 @@ app.get('/api/member-history', requireAuth, async (req, res) => {
     const [payRows] = await pool.query(`
       SELECT p.session_id, s.date, p.amount, p.details
       FROM payments p JOIN sessions s ON s.id = p.session_id
-      WHERE ${wherePay} ORDER BY s.date DESC
-    `, likeNames);
+      WHERE s.club_id = ? AND (${wherePay}) ORDER BY s.date DESC
+    `, [req.auth.clubId, ...likeNames]);
 
     const payDayMap = new Map();
     payRows.forEach(r => {
@@ -489,7 +621,8 @@ app.get('/api/member-history', requireAuth, async (req, res) => {
       } else {
         const payTotal = pay.court + pay.shuttle + pay.snack;
         if (payTotal > 0 || pay.paid > 0) {
-          dateMap.set(key, { date: pay.date, gamesPlayed: 0, cost: payTotal || pay.paid, paid: pay.paid });
+          const shuttlesUsed = Math.round(pay.shuttle / shuttlePrice);
+          dateMap.set(key, { date: pay.date, gamesPlayed: 0, cost: payTotal || pay.paid, paid: pay.paid, shuttlesUsed });
         }
       }
     });
@@ -518,8 +651,8 @@ app.get('/api/session', requireAuth, async (req, res) => {
     const endWindow = new Date(startOfDay.getTime() + 36 * 60 * 60 * 1000);
 
     const [sessions] = await pool.query(
-      'SELECT * FROM sessions WHERE date >= ? AND date <= ? ORDER BY date DESC LIMIT 1',
-      [startOfDay.getTime(), endWindow.getTime()]
+      'SELECT * FROM sessions WHERE club_id = ? AND date >= ? AND date <= ? ORDER BY date DESC LIMIT 1',
+      [req.auth.clubId, startOfDay.getTime(), endWindow.getTime()]
     );
 
     if (sessions.length === 0) {
@@ -530,10 +663,10 @@ app.get('/api/session', requireAuth, async (req, res) => {
     const sessionDate = Number(sessions[0].date);
     const storedSnapshotJson = sessions[0].members_snapshot;
 
-    // GET SETTINGS for default court fee and shuttle price (used in reconstruction)
-    const [settings] = await pool.query('SELECT court_fee_per_person, shuttle_price FROM settings LIMIT 1');
-    const defaultCourtFee = Number(settings[0]?.court_fee_per_person || 40);
-    const defaultShuttlePrice = Number(settings[0]?.shuttle_price || 25);
+    // GET the club's settings for default court fee and shuttle price (used in reconstruction)
+    const [clubRows] = await pool.query('SELECT court_fee_per_person, shuttle_price FROM clubs WHERE id = ?', [req.auth.clubId]);
+    const defaultCourtFee = Number(clubRows[0]?.court_fee_per_person || 40);
+    const defaultShuttlePrice = Number(clubRows[0]?.shuttle_price || 25);
 
     // Get games
     const [games] = await pool.query('SELECT * FROM games WHERE session_id = ? ORDER BY played_at DESC', [sessionId]);
@@ -704,11 +837,26 @@ app.get('/api/session', requireAuth, async (req, res) => {
 });
 
 // GET FULL LIVE STATE (Replaces initial localStorage read)
-// Deliberately PUBLIC (no requireAuth): the no-login Queue View screen (/?queue,
-// meant for a TV/monitor at the shop) reads live court/queue data from here.
+// Deliberately PUBLIC (no requireAuth): the no-login Queue View screen (/?queue&club=<slug>,
+// meant for a TV/monitor at the shop) reads live court/queue data from here. Requires an
+// explicit ?club= slug — never falls back to "any club", that would leak data across clubs.
 app.get('/api/state', async (req, res) => {
+  const { club } = req.query;
   try {
-    const [states] = await pool.query('SELECT * FROM system_states');
+    let clubId;
+    if (club && typeof club === 'string') {
+      const [clubRows] = await pool.query('SELECT id FROM clubs WHERE slug = ?', [club]);
+      if (clubRows.length === 0) return res.status(404).json({ error: 'ไม่พบก๊วนนี้' });
+      clubId = clubRows[0].id;
+    } else {
+      // Backward-compat: pre-multi-club frontend builds (queue view AND the logged-in app's
+      // initial load both) call this with no ?club= at all. Same one-club fallback as /api/login.
+      const [clubRows] = await pool.query('SELECT id FROM clubs');
+      if (clubRows.length === 1) clubId = clubRows[0].id;
+      else return res.status(400).json({ error: 'Missing club' });
+    }
+
+    const [states] = await pool.query('SELECT * FROM system_states WHERE club_id = ?', [clubId]);
     const result = {};
     states.forEach(row => {
       try {
@@ -724,7 +872,7 @@ app.get('/api/state', async (req, res) => {
   }
 });
 
-// SAVE FULL LIVE STATE (Replaces localStorage.setItem)
+// SAVE FULL LIVE STATE (Replaces localStorage.setItem) — scoped to the caller's club
 app.post('/api/state', requireAuth, async (req, res) => {
   const stateObj = req.body;
   const conn = await pool.getConnection();
@@ -733,8 +881,8 @@ app.post('/api/state', requireAuth, async (req, res) => {
     await conn.beginTransaction();
     for (const [key, value] of Object.entries(stateObj)) {
       await conn.query(
-        'INSERT INTO system_states (state_key, state_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE state_value = VALUES(state_value)',
-        [key, JSON.stringify(value)]
+        'INSERT INTO system_states (club_id, state_key, state_value) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE state_value = VALUES(state_value)',
+        [req.auth.clubId, key, JSON.stringify(value)]
       );
     }
     await conn.commit();
@@ -756,7 +904,10 @@ app.listen(port, '0.0.0.0', () => {
 app.post('/api/resync', requireAuth, async (req, res) => {
   const conn = await pool.getConnection();
   try {
-    const [rows] = await pool.query("SELECT state_value FROM system_states WHERE state_key = 'sessionHistory'");
+    const [rows] = await pool.query(
+      "SELECT state_value FROM system_states WHERE club_id = ? AND state_key = 'sessionHistory'",
+      [req.auth.clubId]
+    );
     if (rows.length === 0) return res.status(404).json({ error: 'No sessionHistory found in system_states' });
 
     const sessionHistory = JSON.parse(rows[0].state_value);
@@ -764,13 +915,13 @@ app.post('/api/resync', requireAuth, async (req, res) => {
 
     await conn.beginTransaction();
     for (const session of sessionHistory) {
-      const sessionId = session.id || `session-${session.date}`;
+      const sessionId = session.id || `session-${req.auth.clubId}-${session.date}`;
       const dateInt = Number(session.date);
       const membersSnapshot = session.membersSnapshot ? JSON.stringify(session.membersSnapshot) : null;
 
       await conn.query(
-        'INSERT INTO sessions (id, date, status, members_snapshot) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE status = VALUES(status), members_snapshot = VALUES(members_snapshot)',
-        [sessionId, dateInt, 'completed', membersSnapshot]
+        'INSERT INTO sessions (id, club_id, date, status, members_snapshot) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status = VALUES(status), members_snapshot = VALUES(members_snapshot)',
+        [sessionId, req.auth.clubId, dateInt, 'completed', membersSnapshot]
       );
 
       for (const g of (session.gameHistory || [])) {

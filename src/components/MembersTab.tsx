@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { UserPlus, Trash2, ChevronRight, FileText, X, Search } from 'lucide-react';
+import { UserPlus, Trash2, ChevronRight, FileText, X, Search, BarChart3 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { Member, Rank, RANKS, RANK_COLORS, RANK_LEVEL_LABELS } from '../types';
@@ -18,16 +18,18 @@ interface Props {
   onBulkCheckIn: (ids: string[]) => void;
   onBulkRemove: (ids: string[]) => void;
   onBulkUpdateRank: (ids: string[], rank: Rank) => void;
+  /** เปิดแท็บ "บันทึก" แล้วค้นหาประวัติสะสม (เกม/ลูก/วันที่มาตี) ของสมาชิกคนนี้ให้อัตโนมัติ */
+  onViewStats: (name: string) => void;
 }
 
 
 
 type Filter = 'all' | 'waiting' | 'playing' | 'resting';
 
-export function MembersTab({ 
-  members, searchQuery, onSearch, onRemove, onAddMember, onImportLine, 
+export function MembersTab({
+  members, searchQuery, onSearch, onRemove, onAddMember, onImportLine,
   onUpdateRank, onUpdateName, onAddCourt, onCheckIn,
-  onBulkCheckIn, onBulkRemove, onBulkUpdateRank
+  onBulkCheckIn, onBulkRemove, onBulkUpdateRank, onViewStats
 }: Props) {
   const [filter, setFilter] = useState<Filter>('all');
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -182,6 +184,13 @@ export function MembersTab({
                   )}
                 </div>
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onViewStats(member.name); }}
+                    title="ดูสถิติสะสม (เกม/ลูก/วันที่มาตี)"
+                    className="text-on-surface/20 hover:text-primary transition-all"
+                  >
+                    <BarChart3 size={16} />
+                  </button>
                   {member.balance > 0 && (
                     <span className="text-xs font-black text-error">฿{member.balance.toFixed(0)}</span>
                   )}

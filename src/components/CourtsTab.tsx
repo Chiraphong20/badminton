@@ -196,7 +196,7 @@ function SlotCard({ slotIndex, courtId, playerId, team, members, onSelect, locke
           }
         }}
         className={cn(
-          'relative rounded-2xl border-2 transition-all select-none group min-h-[130px] flex flex-col justify-center',
+          'relative rounded-2xl border-2 transition-all select-none group min-h-[100px] sm:min-h-[130px] flex flex-col justify-center',
           locked ? 'cursor-default' : 'cursor-pointer',
           dragOver
             ? 'border-yellow-300 bg-yellow-50 scale-[1.02] shadow-xl'
@@ -213,29 +213,29 @@ function SlotCard({ slotIndex, courtId, playerId, team, members, onSelect, locke
             {slotIndex + 1}
           </div>
         )}
-        {/* X remove button */}
+        {/* X remove button — สูง/กว้าง 32px+ กันกดพลาดบนจอสัมผัส */}
         {!locked && player && (
           <button
             onClick={e => { e.stopPropagation(); onSelect(null); }}
-            className="absolute -top-2 -right-2 w-7 h-7 bg-error text-white rounded-full flex items-center justify-center z-20 shadow-lg border-2 border-white transition-transform hover:scale-110 active:scale-95"
+            className="absolute -top-2 -right-2 w-8 h-8 bg-error text-white rounded-full flex items-center justify-center z-20 shadow-lg border-2 border-white transition-transform hover:scale-110 active:scale-95"
           >
-            <X size={12} />
+            <X size={13} />
           </button>
         )}
         {player ? (
-          <div className="p-4 flex items-center gap-3">
-            <div className={cn('w-14 h-14 rounded-2xl flex items-center justify-center font-black text-lg shrink-0 shadow-md', RANK_COLORS[player.rank])}>
+          <div className="p-2.5 sm:p-4 flex items-center gap-2 sm:gap-3">
+            <div className={cn('w-11 h-11 sm:w-14 sm:h-14 rounded-xl sm:rounded-2xl flex items-center justify-center font-black text-sm sm:text-lg shrink-0 shadow-md', RANK_COLORS[player.rank])}>
               {player.rank}
             </div>
             <div className="flex-1 min-w-0">
-              <p className="font-headline font-black text-base truncate text-on-surface">{player.name}</p>
-              <p className={cn('text-xs font-bold', teamText)}>{RANK_LEVEL_LABELS[player.rank]}</p>
-              <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                <span className="text-[11px] font-black text-on-surface/50 bg-on-surface/5 px-2 py-0.5 rounded-full">
+              <p className="font-headline font-black text-sm sm:text-base truncate text-on-surface">{player.name}</p>
+              <p className={cn('text-[11px] sm:text-xs font-bold', teamText)}>{RANK_LEVEL_LABELS[player.rank]}</p>
+              <div className="flex items-center gap-1.5 sm:gap-2 mt-1 sm:mt-1.5 flex-wrap">
+                <span className="text-[10px] sm:text-[11px] font-black text-on-surface/50 bg-on-surface/5 px-1.5 sm:px-2 py-0.5 rounded-full">
                   🏸 {player.gamesPlayed} เกม
                 </span>
                 {player.balance > 0 && (
-                  <span className="text-[11px] font-black text-error bg-error/10 px-2 py-0.5 rounded-full">
+                  <span className="text-[10px] sm:text-[11px] font-black text-error bg-error/10 px-1.5 sm:px-2 py-0.5 rounded-full">
                     ฿{player.balance.toFixed(0)}
                   </span>
                 )}
@@ -244,12 +244,12 @@ function SlotCard({ slotIndex, courtId, playerId, team, members, onSelect, locke
             {locked && <Lock size={14} className="text-white/30 shrink-0" />}
           </div>
         ) : (
-          <div className="flex flex-col items-center justify-center gap-2 py-6 text-white/40">
-            <div className="w-10 h-10 rounded-full border-2 border-dashed border-white/20 flex items-center justify-center">
-              <Plus size={20} className="text-white/30" />
+          <div className="flex flex-col items-center justify-center gap-1.5 sm:gap-2 py-4 sm:py-6 text-white/40">
+            <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-full border-2 border-dashed border-white/20 flex items-center justify-center">
+              <Plus size={18} className="text-white/30" />
             </div>
-            <span className="text-xs font-bold text-white/40">เพิ่มผู้เล่น</span>
-            {!locked && <span className="text-xs text-white/35">แตะ หรือ ลากมาวาง</span>}
+            <span className="text-xs font-bold text-white/40">แตะเพื่อเลือกผู้เล่น</span>
+            {!locked && <span className="text-xs text-white/35 hidden sm:inline">หรือ ลากมาวาง</span>}
           </div>
         )}
         {open && !locked && <div className="absolute inset-0 ring-2 ring-white rounded-2xl pointer-events-none" />}
@@ -686,45 +686,47 @@ export function CourtsTab({
       )}
 
       {/* ── Court selector ── */}
-      <div className="flex gap-3 flex-wrap">
+      {/* มือถือ/แท็บเล็ตแนวตั้ง: เลื่อนแนวนอนเป็นแถบแท็บเดียว กันไม่ให้คอร์ดเยอะๆ ดันหน้าจอยาวลงไป */}
+      <div className="flex gap-2 sm:gap-3 overflow-x-auto lg:flex-wrap lg:overflow-visible no-scrollbar -mx-4 px-4 lg:mx-0 lg:px-0">
         {courts.map(court => {
           const filled = court.players.filter(Boolean).length;
           const isSel = court.id === selectedCourtId;
           const active = court.status === 'active';
           return (
             <button key={court.id} onClick={() => setSelectedCourtId(court.id)}
-              className={cn('flex items-center gap-2.5 px-5 py-3.5 rounded-2xl font-bold text-base transition-all border-2',
+              className={cn('shrink-0 flex items-center gap-2 sm:gap-2.5 px-4 py-3 sm:px-5 sm:py-3.5 rounded-2xl font-bold text-sm sm:text-base transition-all border-2',
                 isSel
                   ? active
                     ? 'bg-green-600 text-white border-green-600 shadow-lg shadow-green-600/25'
                     : 'bg-primary text-white border-primary shadow-lg shadow-primary/25'
                   : 'bg-white text-on-surface/70 border-on-surface/10 hover:border-primary/30 hover:text-primary')}>
-              <div className={cn('w-2.5 h-2.5 rounded-full', active ? 'bg-green-300 animate-pulse' : isSel ? 'bg-white/50' : 'bg-on-surface/20')} />
+              <div className={cn('w-2.5 h-2.5 rounded-full shrink-0', active ? 'bg-green-300 animate-pulse' : isSel ? 'bg-white/50' : 'bg-on-surface/20')} />
               {court.name}
               {active
-                ? <span className="text-xs font-black bg-white/20 px-2 py-0.5 rounded-full">กำลังตี</span>
-                : <span className={cn('text-xs font-black px-1.5 py-0.5 rounded-full', isSel ? 'bg-white/20' : 'bg-on-surface/5 text-on-surface/40')}>{filled}/4</span>
+                ? <span className="text-xs font-black bg-white/20 px-2 py-0.5 rounded-full whitespace-nowrap">กำลังตี</span>
+                : <span className={cn('text-xs font-black px-1.5 py-0.5 rounded-full whitespace-nowrap', isSel ? 'bg-white/20' : 'bg-on-surface/5 text-on-surface/40')}>{filled}/4</span>
               }
             </button>
           );
         })}
-        
+
         {/* Add Court button */}
         <button onClick={onAddCourt}
-          className="flex items-center gap-2 px-5 py-3.5 rounded-2xl font-black text-base transition-all border-2 border-dashed border-on-surface/10 text-on-surface/40 hover:border-primary/50 hover:text-primary hover:bg-primary/5">
+          className="shrink-0 flex items-center gap-2 px-4 py-3 sm:px-5 sm:py-3.5 rounded-2xl font-black text-sm sm:text-base transition-all border-2 border-dashed border-on-surface/10 text-on-surface/40 hover:border-primary/50 hover:text-primary hover:bg-primary/5">
           <Plus size={18} /> เพิ่มคอร์ด
         </button>
 
-        <span className="hidden lg:flex items-center text-xs font-semibold text-on-surface/30 ml-1">
+        <span className="hidden lg:flex items-center text-xs font-semibold text-on-surface/30 ml-1 shrink-0">
           ←/→ สลับคอร์ด • 1-4 เพิ่มผู้เล่น • Enter เริ่ม/จบเกม
         </span>
       </div>
 
       {selected ? (
-        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6">
 
           {/* ── Waiting Queue ── */}
-          <section className="xl:col-span-3 space-y-4"
+          {/* จอเล็ก/แท็บเล็ตแนวตั้ง: วางไว้ใต้คอร์ด (order-2) เพราะสิ่งที่ต้องทำก่อนคือดูคอร์ด ไม่ใช่ไล่คิว */}
+          <section className="order-2 lg:order-1 lg:col-span-3 space-y-4"
             onDragOver={e => { if (isActive) return; e.preventDefault(); }}
             onDrop={e => {
               if (isActive) return;
@@ -797,7 +799,7 @@ export function CourtsTab({
               </div>
             </div>
 
-            <div className="space-y-2 max-h-[calc(100vh-450px)] overflow-y-auto pr-1 no-scrollbar">
+            <div className="space-y-2 max-h-[45vh] lg:max-h-[calc(100vh-450px)] overflow-y-auto pr-1 no-scrollbar">
               {waiting.map((m, idx) => (
                 <div key={m.id}
                   draggable={!isActive}
@@ -837,65 +839,65 @@ export function CourtsTab({
           </section>
 
           {/* ── Court Visualization ── */}
-          <section className="xl:col-span-9 space-y-4">
-            <div className="rounded-[2rem] shadow-xl relative"
+          <section className="order-1 lg:order-2 lg:col-span-9 space-y-4">
+            <div className="rounded-[1.5rem] sm:rounded-[2rem] shadow-xl relative"
               style={{ background: isActive ? 'linear-gradient(160deg,#0f3020,#082212)' : 'linear-gradient(160deg,#1a3a2a,#0f2218)' }}>
 
               {/* Header */}
-              <div className="flex items-center justify-between px-6 py-5 gap-4 flex-wrap">
-                <div className="flex items-center gap-3">
+              <div className="flex flex-col gap-3 px-4 sm:px-6 py-4 sm:py-5">
+                <div className="flex items-center gap-2.5 sm:gap-3 flex-wrap">
                   <div className={cn('w-3 h-3 rounded-full shrink-0', isActive ? 'bg-green-400 animate-pulse' : 'bg-white/20')} />
-                  <h2 className="font-headline font-black text-2xl text-white">{selected.name}</h2>
+                  <h2 className="font-headline font-black text-xl sm:text-2xl text-white">{selected.name}</h2>
                   {isActive
                     ? <span className="text-xs font-black bg-green-400/20 text-green-300 px-3 py-1.5 rounded-full">🏸 กำลังตีอยู่</span>
                     : <span className="text-xs text-white/40 font-bold">{filledCount}/4 คน</span>
                   }
                 </div>
 
-                <div className="flex items-center gap-3 flex-wrap">
+                <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
                   {/* Shuttle counter - Visible in all states */}
-                  <div className="flex items-center gap-2 bg-white/10 border border-white/20 rounded-2xl px-4 py-2.5">
+                  <div className="flex items-center gap-2 bg-white/10 border border-white/20 rounded-2xl px-3 sm:px-4 py-2 sm:py-2.5">
                     <button onClick={() => addShuttle(-1)} disabled={selected.shuttlecocks <= 0}
-                      className="w-9 h-9 bg-white/10 text-white rounded-xl font-black text-lg flex items-center justify-center hover:bg-white/20 transition-colors disabled:opacity-20">-</button>
+                      className="w-9 h-9 bg-white/10 text-white rounded-xl font-black text-lg flex items-center justify-center hover:bg-white/20 active:scale-95 transition-all disabled:opacity-20">-</button>
                     <div className="text-center px-1">
                       <p className="text-white/45 text-xs font-semibold leading-none mb-1">จำนวนลูก</p>
                       <p className="text-white font-headline font-black text-2xl leading-none">{selected.shuttlecocks}</p>
                     </div>
                     <button onClick={() => addShuttle(1)}
-                      className="w-9 h-9 bg-green-400 text-green-900 rounded-xl font-black text-lg flex items-center justify-center hover:bg-green-300 transition-colors shadow-md">+</button>
+                      className="w-9 h-9 bg-green-400 text-green-900 rounded-xl font-black text-lg flex items-center justify-center hover:bg-green-300 active:scale-95 transition-all shadow-md">+</button>
                   </div>
 
                   {/* Cost preview */}
-                  <div className="bg-white/5 border border-white/10 rounded-2xl px-4 py-2.5 text-center">
+                  <div className="bg-white/5 border border-white/10 rounded-2xl px-3 sm:px-4 py-2 sm:py-2.5 text-center">
                     <p className="text-white/45 text-xs font-semibold">ค่าลูก/คน</p>
                     <p className="text-white font-headline font-black text-lg">฿{(selected.shuttlecocks * 25).toFixed(0)}</p>
                   </div>
 
                   {isActive ? (
                     <button onClick={() => onResetCourt(selected.id)}
-                      className={cn('flex items-center gap-2 text-white px-5 py-2.5 rounded-xl font-bold text-sm shadow-lg transition-all',
-                        endGamePending ? 'bg-red-400 scale-105 animate-pulse' : 'bg-red-500 hover:bg-red-400 hover:scale-105')}>
+                      className={cn('flex-1 sm:flex-none flex items-center justify-center gap-2 text-white px-5 py-2.5 rounded-xl font-bold text-sm shadow-lg transition-all min-w-[140px]',
+                        endGamePending ? 'bg-red-400 scale-105 animate-pulse' : 'bg-red-500 hover:bg-red-400 hover:scale-105 active:scale-95')}>
                       <Check size={16} /> {endGamePending ? 'กด Enter อีกครั้งเพื่อจบเกม' : 'จบเกม'}
                     </button>
                   ) : (
                     <>
                       <button onClick={() => onAutoMatch(selected.id)}
-                        className="bg-white/10 border border-white/20 text-white px-4 py-2.5 rounded-xl font-bold text-sm hover:bg-white/20 transition flex items-center gap-2">
+                        className="flex-1 sm:flex-none bg-white/10 border border-white/20 text-white px-4 py-2.5 rounded-xl font-bold text-sm hover:bg-white/20 active:scale-95 transition-all flex items-center justify-center gap-2">
                         <Bolt size={14} fill="currentColor" /> จัดอัตโนมัติ
                       </button>
                       <button
                         onClick={() => onStartGame(selected.id)}
                         disabled={filledCount !== 4}
                         className={cn(
-                          'flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold text-sm shadow-lg transition-all',
+                          'flex-1 sm:flex-none flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl font-bold text-sm shadow-lg transition-all',
                           filledCount === 4
-                            ? 'bg-green-400 text-green-900 hover:bg-green-300 hover:scale-105'
+                            ? 'bg-green-400 text-green-900 hover:bg-green-300 hover:scale-105 active:scale-95'
                             : 'bg-white/10 text-white/30 cursor-not-allowed border border-white/10'
                         )}>
                         ▶ เริ่มเกม {filledCount === 4 ? '(Enter)' : `(${filledCount}/4)`}
                       </button>
                       <button onClick={() => { if (confirm(`ยืนยันการลบ "${selected.name}"?`)) onDeleteCourt(selected.id); }}
-                        className="text-white/30 hover:text-red-400 p-2.5 rounded-xl hover:bg-red-400/10 transition-all">
+                        className="text-white/30 hover:text-red-400 p-2.5 rounded-xl hover:bg-red-400/10 active:scale-95 transition-all shrink-0">
                         <Trash2 size={20} />
                       </button>
                     </>
@@ -904,7 +906,7 @@ export function CourtsTab({
               </div>
 
               {/* Court area */}
-              <div className="px-6 pb-6">
+              <div className="px-3 sm:px-6 pb-4 sm:pb-6">
                 <div className="relative">
                   {/* Background Layer (Clipped) */}
                   <div className={cn(
@@ -935,14 +937,14 @@ export function CourtsTab({
                     <div className="absolute bottom-2 left-1/2 -translate-x-1/2 bg-secondary/80 text-white text-xs font-black px-4 py-1 rounded-full z-10 shadow-lg">ทีม B</div>
 
                     <div className="grid grid-rows-2">
-                      <div className="grid grid-cols-2 gap-4 p-6 pb-10">
+                      <div className="grid grid-cols-2 gap-2 sm:gap-4 p-3 sm:p-6 pb-6 sm:pb-10">
                         {[0, 1].map(i => (
                           <SlotCard key={i} slotIndex={i} courtId={selected.id} playerId={selected.players[i]} team="A"
                             members={members} onSelect={id => handleSelect(i, id)} locked={false}
                             openRequest={openSlotRequest?.slot === i ? openSlotRequest.nonce : null} />
                         ))}
                       </div>
-                      <div className="grid grid-cols-2 gap-4 p-6 pt-10">
+                      <div className="grid grid-cols-2 gap-2 sm:gap-4 p-3 sm:p-6 pt-6 sm:pt-10">
                         {[2, 3].map(i => (
                           <SlotCard key={i} slotIndex={i} courtId={selected.id} playerId={selected.players[i]} team="B"
                             members={members} onSelect={id => handleSelect(i, id)} locked={false}
@@ -954,7 +956,7 @@ export function CourtsTab({
                 </div>
 
                 {/* VS bar */}
-                <div className="mt-4 flex items-center gap-3 bg-white/5 border border-white/10 rounded-2xl px-5 py-3">
+                <div className="mt-4 flex items-center gap-3 bg-white/5 border border-white/10 rounded-2xl px-3 sm:px-5 py-3">
                   <div className="flex-1 min-w-0 text-right">
                     <p className="text-[11px] font-black text-primary/80 uppercase mb-0.5">ทีม A</p>
                     <p className="text-white text-sm font-bold truncate">{teamA.filter(Boolean).map(p => p!.name).join(' & ') || '—'}</p>
@@ -969,7 +971,7 @@ export function CourtsTab({
 
               {/* ── Game History for this court ── */}
               {courtGames.length > 0 && (
-                <div className="px-6 pb-6 space-y-3">
+                <div className="px-3 sm:px-6 pb-4 sm:pb-6 space-y-3">
                   <div className="flex items-center gap-2">
                     <h3 className="font-headline font-black text-white text-base">เกมที่ผ่านมา</h3>
                     <span className="text-xs font-black bg-white/10 text-white/60 px-2 py-0.5 rounded-full">{courtGames.length} เกม</span>
@@ -989,11 +991,11 @@ export function CourtsTab({
           {selected && (() => {
             const slots = courtQueues[selected.id] || [];
             return (
-              <section className="xl:col-span-12">
-                <div className="bg-white rounded-[2rem] shadow-sm border border-on-surface/5 overflow-hidden">
-                  <div className="flex items-center justify-between px-6 py-4 border-b border-on-surface/5">
+              <section className="order-3 lg:col-span-12">
+                <div className="bg-white rounded-[1.5rem] sm:rounded-[2rem] shadow-sm border border-on-surface/5 overflow-hidden">
+                  <div className="flex items-center justify-between flex-wrap gap-2 px-4 sm:px-6 py-4 border-b border-on-surface/5">
                     <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 bg-primary/10 rounded-xl flex items-center justify-center">
+                      <div className="w-9 h-9 bg-primary/10 rounded-xl flex items-center justify-center shrink-0">
                         <span className="text-lg">⏭</span>
                       </div>
                       <div>
@@ -1006,7 +1008,7 @@ export function CourtsTab({
                     </div>
                     <button
                       onClick={() => setEditingSlot({ courtId: selected.id })}
-                      className="flex items-center gap-2 bg-primary text-white px-4 py-2 rounded-xl font-bold text-sm shadow-sm shadow-primary/20 hover:scale-105 active:scale-95 transition-all"
+                      className="flex items-center gap-2 bg-primary text-white px-4 py-2 rounded-xl font-bold text-sm shadow-sm shadow-primary/20 hover:scale-105 active:scale-95 transition-all shrink-0"
                     >
                       <Plus size={15} /> เพิ่มคิว
                     </button>
@@ -1021,49 +1023,51 @@ export function CourtsTab({
                       {slots.map((slot, idx) => {
                         const allPlayers = [...slot.teamA, ...slot.teamB];
                         return (
-                          <div key={slot.id} className="px-6 py-4 flex items-center gap-4">
-                            {/* Number */}
-                            <div className={cn(
-                              'w-8 h-8 rounded-xl flex items-center justify-center font-black text-sm shrink-0',
-                              idx === 0 ? 'bg-primary text-white' : 'bg-on-surface/5 text-on-surface/40'
-                            )}>
-                              {idx + 1}
-                            </div>
-
-                            {/* Players */}
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <div className="flex items-center gap-1.5 flex-wrap">
-                                  {slot.teamA.map((p, i) => (
-                                    <div key={i} className={cn('flex items-center gap-1 px-2 py-1 rounded-lg text-sm font-bold', RANK_COLORS[p.rank])}>
-                                      <span className="text-xs font-bold opacity-70">{p.rank}</span>
-                                      <span>{p.name}</span>
-                                    </div>
-                                  ))}
-                                </div>
-                                {slot.teamA.length > 0 && slot.teamB.length > 0 && (
-                                  <span className="text-on-surface/25 font-black text-xs">VS</span>
-                                )}
-                                <div className="flex items-center gap-1.5 flex-wrap">
-                                  {slot.teamB.map((p, i) => (
-                                    <div key={i} className={cn('flex items-center gap-1 px-2 py-1 rounded-lg text-sm font-bold', RANK_COLORS[p.rank])}>
-                                      <span className="text-xs font-bold opacity-70">{p.rank}</span>
-                                      <span>{p.name}</span>
-                                    </div>
-                                  ))}
-                                </div>
+                          <div key={slot.id} className="px-4 sm:px-6 py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
+                            <div className="flex items-center gap-3 flex-1 min-w-0">
+                              {/* Number */}
+                              <div className={cn(
+                                'w-8 h-8 rounded-xl flex items-center justify-center font-black text-sm shrink-0',
+                                idx === 0 ? 'bg-primary text-white' : 'bg-on-surface/5 text-on-surface/40'
+                              )}>
+                                {idx + 1}
                               </div>
-                              {slot.note && (
-                                <p className="text-xs text-on-surface/40 font-semibold mt-1">{slot.note}</p>
-                              )}
+
+                              {/* Players */}
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    {slot.teamA.map((p, i) => (
+                                      <div key={i} className={cn('flex items-center gap-1 px-2 py-1 rounded-lg text-sm font-bold', RANK_COLORS[p.rank])}>
+                                        <span className="text-xs font-bold opacity-70">{p.rank}</span>
+                                        <span>{p.name}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                  {slot.teamA.length > 0 && slot.teamB.length > 0 && (
+                                    <span className="text-on-surface/25 font-black text-xs">VS</span>
+                                  )}
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    {slot.teamB.map((p, i) => (
+                                      <div key={i} className={cn('flex items-center gap-1 px-2 py-1 rounded-lg text-sm font-bold', RANK_COLORS[p.rank])}>
+                                        <span className="text-xs font-bold opacity-70">{p.rank}</span>
+                                        <span>{p.name}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                                {slot.note && (
+                                  <p className="text-xs text-on-surface/40 font-semibold mt-1">{slot.note}</p>
+                                )}
+                              </div>
                             </div>
 
                             {/* Actions */}
-                            <div className="flex items-center gap-1 shrink-0">
+                            <div className="flex items-center gap-1 self-end sm:self-auto shrink-0">
                               <button
                                 onClick={() => onMoveCourtQueue(selected.id, slot.id, 'up')}
                                 disabled={idx === 0}
-                                className="p-1.5 rounded-lg text-on-surface/20 hover:text-primary hover:bg-primary/5 disabled:opacity-20 disabled:cursor-not-allowed transition-all"
+                                className="p-2 sm:p-1.5 rounded-lg text-on-surface/20 hover:text-primary hover:bg-primary/5 disabled:opacity-20 disabled:cursor-not-allowed transition-all"
                                 title="เลื่อนขึ้น"
                               >
                                 <ChevronDown size={16} className="rotate-180" />
@@ -1071,21 +1075,21 @@ export function CourtsTab({
                               <button
                                 onClick={() => onMoveCourtQueue(selected.id, slot.id, 'down')}
                                 disabled={idx === slots.length - 1}
-                                className="p-1.5 rounded-lg text-on-surface/20 hover:text-primary hover:bg-primary/5 disabled:opacity-20 disabled:cursor-not-allowed transition-all"
+                                className="p-2 sm:p-1.5 rounded-lg text-on-surface/20 hover:text-primary hover:bg-primary/5 disabled:opacity-20 disabled:cursor-not-allowed transition-all"
                                 title="เลื่อนลง"
                               >
                                 <ChevronDown size={16} />
                               </button>
                               <button
                                 onClick={() => setEditingSlot({ courtId: selected.id, slot })}
-                                className="p-1.5 rounded-lg text-on-surface/20 hover:text-primary hover:bg-primary/5 transition-all"
+                                className="p-2 sm:p-1.5 rounded-lg text-on-surface/20 hover:text-primary hover:bg-primary/5 transition-all"
                                 title="แก้ไข"
                               >
                                 <RotateCcw size={15} />
                               </button>
                               <button
                                 onClick={() => onRemoveCourtQueue(selected.id, slot.id)}
-                                className="p-1.5 rounded-lg text-on-surface/20 hover:text-error hover:bg-error/5 transition-all"
+                                className="p-2 sm:p-1.5 rounded-lg text-on-surface/20 hover:text-error hover:bg-error/5 transition-all"
                                 title="ลบ"
                               >
                                 <Trash2 size={15} />

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { cn } from '../lib/utils';
 import { Court, RANK_COLORS, CourtQueueSlot, Member } from '../types';
 import { format } from 'date-fns';
@@ -13,26 +13,46 @@ interface AppState {
 }
 
 export function QueueView() {
+  const clubSlug = useMemo(() => new URLSearchParams(window.location.search).get('club') || '', []);
   const [state, setState] = useState<AppState | null>(null);
+  const [notFound, setNotFound] = useState(false);
   const [now, setNow] = useState(new Date());
   const [lastSync, setLastSync] = useState(new Date());
 
   const load = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/state`);
+      const res = await fetch(`${API_BASE}/api/state?club=${encodeURIComponent(clubSlug)}`);
       if (res.ok) {
         setState(await res.json());
         setLastSync(new Date());
+      } else if (res.status === 400 || res.status === 404) {
+        setNotFound(true);
       }
     } catch {}
   };
 
   useEffect(() => {
+    if (!clubSlug) { setNotFound(true); return; }
     load();
     const syncIv = setInterval(load, 20000);
     const clockIv = setInterval(() => setNow(new Date()), 1000);
     return () => { clearInterval(syncIv); clearInterval(clockIv); };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clubSlug]);
+
+  if (notFound) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-6">
+        <div className="text-center space-y-4">
+          <div className="w-20 h-20 rounded-3xl bg-error/10 flex items-center justify-center mx-auto">
+            <span className="text-4xl">🔎</span>
+          </div>
+          <p className="font-bold text-on-surface/60">ไม่พบก๊วนนี้</p>
+          <p className="text-sm text-on-surface/30">ลิงก์หน้าคิวนี้ไม่ถูกต้องหรือขาดข้อมูลก๊วน — ขอลิงก์ใหม่จากหน้า "ตั้งค่าระบบ"</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!state) {
     return (

@@ -19,7 +19,8 @@ async function initDB() {
       CREATE TABLE IF NOT EXISTS settings (
         id INT PRIMARY KEY DEFAULT 1,
         court_fee_per_person DECIMAL(10, 2) DEFAULT 40,
-        shuttle_price DECIMAL(10, 2) DEFAULT 25
+        shuttle_price DECIMAL(10, 2) DEFAULT 25,
+        promptpay_id VARCHAR(20)
       )
     `);
 

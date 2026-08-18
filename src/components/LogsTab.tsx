@@ -19,10 +19,13 @@ interface Props {
   onActiveTab: (tab: 'dashboard' | 'logs' | 'members' | 'courts' | 'settings') => void;
   onUpdateGame: (id: string, players: string[], shuttles: number) => void;
   onPullSession: (date: string) => Promise<SessionRecord | undefined>;
+  /** ชื่อสมาชิกที่ถูกส่งมาจากปุ่ม "ดูสถิติ" ในหน้าสมาชิก — เข้ามาแล้วให้ค้นหาให้อัตโนมัติ */
+  pendingSearch?: string | null;
+  onConsumePendingSearch?: () => void;
 }
 
 interface SessionDate { id: string; date: number; }
-interface MemberHistoryRecord { sessionId: string; date: number; gamesPlayed: number; cost: number; paid: number; }
+interface MemberHistoryRecord { sessionId: string; date: number; gamesPlayed: number; cost: number; paid: number; shuttlesUsed: number; }
 
 function EditGameModal({ game, members, onSave, onClose }: { game: GameRecord, members: Member[], onSave: (pids: string[], shuttles: number) => void, onClose: () => void }) {
   const [pids, setPids] = React.useState<string[]>(game.players.map(p => p.id));
@@ -104,7 +107,7 @@ function EditGameModal({ game, members, onSave, onClose }: { game: GameRecord, m
   );
 }
 
-export function LogsTab({ gameHistory, sessionHistory, members, paymentHistory, onViewSession, onActiveTab, onUpdateGame, onPullSession }: Props) {
+export function LogsTab({ gameHistory, sessionHistory, members, paymentHistory, onViewSession, onActiveTab, onUpdateGame, onPullSession, pendingSearch, onConsumePendingSearch }: Props) {
   const [editingGame, setEditingGame] = React.useState<GameRecord | null>(null);
   const [expandedPayment, setExpandedPayment] = React.useState<string | null>(null);
   const [showSessionDropdown, setShowSessionDropdown] = React.useState(false);
@@ -224,6 +227,15 @@ export function LogsTab({ gameHistory, sessionHistory, members, paymentHistory, 
     setShowSuggestions(false);
     fetchMemberHistory(memberSearch);
   };
+
+  // มาจากปุ่ม "ดูสถิติ" ในหน้าสมาชิก — ค้นหาให้อัตโนมัติแล้วเคลียร์ค่าทิ้ง กันค้นซ้ำตอน re-render
+  React.useEffect(() => {
+    if (!pendingSearch) return;
+    setMemberSearch(pendingSearch);
+    fetchMemberHistory(pendingSearch);
+    onConsumePendingSearch?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingSearch]);
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
@@ -407,6 +419,7 @@ export function LogsTab({ gameHistory, sessionHistory, members, paymentHistory, 
               <div className="flex items-center justify-between px-1 mb-3 flex-wrap gap-2">
                 <p className="text-xs font-black text-primary">
                   "{memberHistorySearched}" มาตี {memberHistory.length} ครั้ง · รวม {memberHistory.reduce((a, r) => a + r.gamesPlayed, 0)} เกม
+                  · 🏸 {memberHistory.reduce((a, r) => a + (r.shuttlesUsed || 0), 0)} ลูก
                 </p>
                 <div className="flex gap-3 text-xs font-bold">
                   <span className="text-on-surface/50">รวมทั้งหมด ฿{memberHistory.reduce((a, r) => a + r.cost, 0).toLocaleString()}</span>
@@ -427,7 +440,7 @@ export function LogsTab({ gameHistory, sessionHistory, members, paymentHistory, 
                       <div>
                         <p className="font-black text-sm">{format(record.date, 'd MMMM yyyy', { locale: th })}</p>
                         <p className="text-xs text-on-surface/45 font-semibold">
-                          {format(record.date, 'EEEE', { locale: th })} · {record.gamesPlayed} เกม
+                          {format(record.date, 'EEEE', { locale: th })} · {record.gamesPlayed} เกม · 🏸 {record.shuttlesUsed || 0} ลูก
                         </p>
                       </div>
                     </div>

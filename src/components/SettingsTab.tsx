@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Settings,
   RefreshCw,
@@ -19,6 +19,9 @@ interface Props {
   setCourtFeePerPerson: (val: number) => void;
   shuttlePrice: number;
   setShuttlePrice: (val: number) => void;
+  promptPayId: string;
+  setPromptPayId: (val: string) => void;
+  clubSlug: string;
   onSeedMockHistory: () => void;
   onResetDay: () => void;
   onFactoryReset: () => void;
@@ -30,9 +33,21 @@ interface Props {
 export function SettingsTab({
   courtFeePerPerson, setCourtFeePerPerson,
   shuttlePrice, setShuttlePrice,
+  promptPayId, setPromptPayId,
+  clubSlug,
   onSeedMockHistory, onResetDay, onFactoryReset,
   rankMemory, onChangePin, onLogout
 }: Props) {
+  const [promptPayInput, setPromptPayInput] = useState(promptPayId);
+  const [promptPaySaved, setPromptPaySaved] = useState(false);
+  // sync ค่าจาก props ถ้ามีการโหลดข้อมูลใหม่มาทับ (เช่นตอนเปิดหน้าครั้งแรก data ยังไม่มา)
+  useEffect(() => { setPromptPayInput(promptPayId); }, [promptPayId]);
+
+  const savePromptPay = () => {
+    setPromptPayId(promptPayInput.trim());
+    setPromptPaySaved(true);
+    setTimeout(() => setPromptPaySaved(false), 2000);
+  };
   const [copied, setCopied] = useState(false);
   // ตัว PIN ปัจจุบันเก็บแค่ hash ไว้ที่เซิร์ฟเวอร์ ฝั่งนี้จึงพรีฟิลค่าเดิมไม่ได้แล้ว —
   // ต้องพิมพ์ PIN ปัจจุบันมายืนยันทุกครั้งที่จะเปลี่ยน (กันกรณีเครื่องเปิดค้างไว้)
@@ -56,7 +71,8 @@ export function SettingsTab({
     setPinSaved(true);
     setTimeout(() => setPinSaved(false), 2000);
   };
-  const queueUrl = `${window.location.origin}${window.location.pathname}?queue`;
+  // แอปเดียวรองรับหลายก๊วน — หน้าคิว (public, ไม่ล็อกอิน) ต้องระบุว่าเป็นก๊วนไหนผ่าน ?club=
+  const queueUrl = `${window.location.origin}${window.location.pathname}?queue&club=${encodeURIComponent(clubSlug)}`;
   const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&margin=10&data=${encodeURIComponent(queueUrl)}`;
 
   const copyUrl = () => {
@@ -158,14 +174,47 @@ export function SettingsTab({
             </div>
             <div className="space-y-3">
               <label className="text-xs font-bold text-on-surface/40 ml-2">ราคาลูกแบด (฿)</label>
-              <input 
-                type="number" 
-                value={shuttlePrice} 
+              <input
+                type="number"
+                value={shuttlePrice}
                 onChange={e => setShuttlePrice(Number(e.target.value))}
-                className="w-full px-6 py-4 bg-background rounded-2xl font-headline font-black text-3xl focus:outline-none focus:ring-4 focus:ring-primary/10 transition-all border-none" 
+                className="w-full px-6 py-4 bg-background rounded-2xl font-headline font-black text-3xl focus:outline-none focus:ring-4 focus:ring-primary/10 transition-all border-none"
               />
             </div>
           </div>
+        </section>
+
+        {/* PromptPay Section */}
+        <section className="bg-white rounded-[2.5rem] p-8 shadow-sm border border-on-surface/5 space-y-6 md:col-span-2">
+          <h3 className="text-sm font-black uppercase tracking-widest text-on-surface/40 flex items-center gap-2">
+            <QrCode size={18} className="text-primary" />
+            PromptPay
+          </h3>
+          <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-end">
+            <div className="flex-1 w-full">
+              <label className="text-xs font-bold text-on-surface/40 ml-2">เบอร์พร้อมเพย์ / เลขบัตรประชาชน</label>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={promptPayInput}
+                onChange={e => setPromptPayInput(e.target.value.replace(/[^0-9]/g, ''))}
+                onKeyDown={e => { if (e.key === 'Enter') savePromptPay(); }}
+                placeholder="เช่น 0812345678 หรือเลขบัตร 13 หลัก"
+                className="w-full mt-1 px-6 py-4 bg-background rounded-2xl font-headline font-black text-2xl tracking-tight focus:outline-none focus:ring-4 focus:ring-primary/10 transition-all border-none"
+              />
+            </div>
+            <button
+              onClick={savePromptPay}
+              className="px-5 py-4 bg-primary text-white rounded-2xl font-bold text-sm shadow-lg shadow-primary/20 hover:scale-105 active:scale-95 transition-all shrink-0 w-full sm:w-auto"
+            >
+              {promptPaySaved ? <Check size={20} className="mx-auto" /> : 'บันทึก'}
+            </button>
+          </div>
+          <p className="text-xs text-on-surface/30 ml-2">
+            {promptPayId
+              ? 'ตั้งไว้แล้ว — ตอนกด "รับเงิน & ปิดยอด" ในหน้ารายชื่อ จะมีตัวเลือกสร้าง QR พร้อมเพย์ให้ลูกค้าสแกนจ่ายยอดที่ค้าง (รวมยอดของหลายคนพร้อมกันได้)'
+              : 'ยังไม่ได้ตั้งเบอร์พร้อมเพย์ — ตั้งไว้เพื่อเปิดใช้ QR รับเงินตอนเช็คบิลลูกค้า'}
+          </p>
         </section>
       </div>
 
