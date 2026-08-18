@@ -145,6 +145,49 @@ export function useAppData() {
     })();
   }, [isAuthenticated]);
 
+  // ── Multi-device staleness guard ──────────────────────────────────────────
+  // ปัญหาที่เจอ: เปิดแอปพร้อมกันหลายเครื่อง (มือถือ/แท็บเล็ตที่ร้าน) — ทุกเครื่อง autosave
+  // "ก้อนข้อมูลทั้งหมด" ทับเซิร์ฟเวอร์เป็นระยะโดยไม่รู้ว่าเครื่องอื่นเปลี่ยนอะไรไปหรือยัง ถ้าเครื่อง A
+  // กด "จบวันและสรุปยอด" (sessionStartDate -> null) แต่เครื่อง B ยังเปิดค้าง (ยังมีค่าเก่าอยู่) เครื่อง B
+  // จะ autosave ทับค่า null ของ A กลับเป็นค่าเก่าเงียบๆ ภายใน 2 นาที ทำให้ "วันที่เริ่มก๊วน" ค้างที่วันเก่า
+  //
+  // แก้แบบเบาที่สุดที่ไม่ต้องเปลี่ยนสถาปัตยกรรมการ sync ทั้งหมด: เช็คกับเซิร์ฟเวอร์เป็นระยะ ถ้า
+  // sessionStartDate บนเซิร์ฟเวอร์ไม่ตรงกับที่เครื่องนี้ถืออยู่ (และเครื่องนี้ไม่ได้เพิ่งเปลี่ยนเอง —
+  // กันชนกับ debounced save ของตัวเอง) แปลว่ามีคนจบวัน/ล้างกระดานจากเครื่องอื่นไปแล้ว รีโหลดหน้าทันที
+  // เพื่อดึงข้อมูลชุดใหม่ทั้งหมด (courts/games/payments/members ที่ resetDay ล้างไปด้วย ไม่ใช่แค่วันที่)
+  const sessionStartDateRef = useRef(sessionStartDate);
+  const lastSessionStartChangeRef = useRef(Date.now());
+  useEffect(() => {
+    if (sessionStartDateRef.current !== sessionStartDate) {
+      sessionStartDateRef.current = sessionStartDate;
+      lastSessionStartChangeRef.current = Date.now();
+    }
+  }, [sessionStartDate]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const POLL_MS = 25000;
+    const QUIET_BUFFER_MS = 8000; // รอให้ debounced save ของตัวเอง (2s) มีเวลาขึ้นเซิร์ฟเวอร์ก่อน
+    const iv = setInterval(async () => {
+      try {
+        const clubSlug = getClub()?.slug || '';
+        if (!clubSlug) return;
+        const res = await apiFetch(`${API_BASE}/api/state?club=${encodeURIComponent(clubSlug)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const serverSessionStartDate: number | null = data?.sessionStartDate ?? null;
+        const quietFor = Date.now() - lastSessionStartChangeRef.current;
+        if (quietFor > QUIET_BUFFER_MS && serverSessionStartDate !== sessionStartDateRef.current) {
+          console.warn('พบข้อมูลใหม่จากเครื่องอื่น (เช่นมีคนกด "จบวันฯ" ไปแล้ว) — กำลังโหลดข้อมูลล่าสุด...');
+          window.location.reload();
+        }
+      } catch {
+        // เน็ตหลุดชั่วคราว ข้ามรอบนี้ไป ไม่ต้อง reload
+      }
+    }, POLL_MS);
+    return () => clearInterval(iv);
+  }, [isAuthenticated]);
+
   // Keep a ref with latest state for the auto-save interval
   const autoSaveStateRef = useRef<object>({});
   useEffect(() => {
