@@ -878,6 +878,27 @@ app.post('/api/state', requireAuth, async (req, res) => {
   const conn = await pool.getConnection();
 
   try {
+    // Stale-client guard: a device left open since before someone else ran "จบวันและ
+    // สรุปยอด" elsewhere still holds the OLD sessionStartDate in memory and keeps pushing
+    // it back on its own periodic autosave, silently resurrecting a day that's already
+    // been closed server-side. If the server currently has no active session (null) but
+    // this write tries to set one from more than an hour ago, it's almost certainly a
+    // stale client re-sending old memory, not a real "new session just started" — drop
+    // just that one field rather than rejecting the whole save.
+    if (Object.prototype.hasOwnProperty.call(stateObj, 'sessionStartDate') && stateObj.sessionStartDate != null) {
+      const [[currentRow]] = await pool.query(
+        "SELECT state_value FROM system_states WHERE club_id = ? AND state_key = 'sessionStartDate'",
+        [req.auth.clubId]
+      );
+      let currentVal = null;
+      if (currentRow) { try { currentVal = JSON.parse(currentRow.state_value); } catch { currentVal = currentRow.state_value; } }
+      const ONE_HOUR_MS = 60 * 60 * 1000;
+      if (currentVal === null && (Date.now() - Number(stateObj.sessionStartDate)) > ONE_HOUR_MS) {
+        console.warn(`[stale-guard] club ${req.auth.clubId}: ignored stale sessionStartDate=${stateObj.sessionStartDate} (server already reset)`);
+        delete stateObj.sessionStartDate;
+      }
+    }
+
     await conn.beginTransaction();
     for (const [key, value] of Object.entries(stateObj)) {
       await conn.query(
